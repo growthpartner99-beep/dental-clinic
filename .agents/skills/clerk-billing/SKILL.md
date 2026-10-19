@@ -245,7 +245,7 @@ export function UpgradePrompt() {
 
 ### 6. B2B Seat-Based Billing with Organizations
 
-Org plans can carry a **seat limit** (membership cap) that Clerk enforces at invite time. Use the `org:` slug prefix on org-side plan checks (e.g. `has({ plan: 'org:team' })`) to keep gating unambiguous. Render the B2B pricing page with `<PricingTable for="organization" />`, and use `<OrganizationProfile />` for the org account billing UI.
+Org plans can be fixed-price seat-limited plans, where Clerk enforces a membership cap, or per-seat plans, where the charge is based on the number of seats purchased. Use the `org:` slug prefix on org-side plan checks (e.g. `has({ plan: 'org:team' })`) to keep gating unambiguous. Render the B2B pricing page with `<PricingTable for="organization" />`, and use `<OrganizationProfile />` for the org account billing UI.
 
 See `references/b2b-patterns.md` for tiered plan naming, seat-limit invariants, admin-only billing, and webhook handlers.
 
@@ -367,7 +367,8 @@ export async function POST(req: NextRequest) {
 	if (evt.type === 'subscription.created') {
 		const { id, payer, items, status } = evt.data
 		const entityId = payer.organization_id ?? payer.user_id
-		const plan = items[0]?.plan?.slug
+		const activeItem = items.find((item) => item.status === 'active' && item.plan?.slug)
+		const plan = activeItem?.plan?.slug
 		await db.subscriptions.upsert({
 			where: { subscriptionId: id },
 			create: { subscriptionId: id, entityId, plan, status },
@@ -436,7 +437,8 @@ Use lowercase slugs matching what you define in the dashboard.
 |----------|---------------|------------|
 | B2C SaaS | Individual user | `has({ plan: 'pro' })` on user session |
 | B2B SaaS | Organization | `has({ plan: 'org:team' })` on org session |
-| Seat-limited B2B | Organization | Plan has a seat cap; pricing is per-plan, not per-member, tier your plans for bigger orgs |
+| Seat-limited B2B (fixed price) | Organization | Seat cap only, one fixed price regardless of member count — tier plans for bigger orgs |
+| Per-seat B2B | Organization | Per-seat fee on the plan, charge scales with purchased seats (seat limit optional) — Clerk handles seat purchases |
 
 For B2B, ensure the user has an active org session. The `has()` check evaluates the active entity (user or org).
 
@@ -463,7 +465,7 @@ When you see any of these errors or symptoms, the fix is almost always a Dashboa
 | `<PricingTable />` renders empty | No plans, OR plan in the wrong tab (User vs Organization), OR Billing not enabled | Create plan in matching tab; pass `for="organization"` for B2B; check Billing Settings |
 | Users can't subscribe to a personal plan on a B2C + B2B app | Membership required mode (default since 2025-08-22) disables personal accounts, signed-in users are forced into `choose-organization` and never land on a personal-subscription state | If you need personal + org subscriptions coexisting: Dashboard → Organizations settings → *Membership optional* |
 | Can't find a Features page | Features are per-plan, not global | Dashboard → Billing → Plans → click plan → Features |
-| `has({ plan: 'pro' })` always returns `false` after a successful checkout | Session token hasn't been refreshed to include the new plan | `await clerk.session?.reload()` or navigate to force a new session |
+| `has({ plan: 'pro' })` always returns `false` after a successful checkout | Session token hasn't been refreshed to include the new plan | Force a fresh session token: `await getToken({ skipCache: true })` from `useAuth()` on the client, or navigate to trigger a new session |
 | `has({ plan: 'pro' })` returns `false` before any subscribe attempt | Plan slug mismatch (case-sensitive), OR Billing not enabled, OR payment gateway not connected in production | Verify slug in Dashboard → Billing → Plans; confirm Billing → Settings shows enabled + connected gateway |
 | `has({ permission: 'org:x:y' })` returns `false` for a user who has the role | The Feature tied to that permission is not included in the organization's active Plan | Add the Feature to the Plan in Dashboard → Billing → Plans → Features |
 | Webhook 401 or 404 / signature verification failed | `CLERK_WEBHOOK_SIGNING_SECRET` mismatch, or `auth.protect()` covers the webhook route | Copy the Signing Secret from Dashboard → Webhooks. Ensure nothing calls `auth.protect()` for `/api/webhooks(.*)`, in middleware or in the handler |

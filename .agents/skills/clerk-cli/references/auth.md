@@ -92,7 +92,7 @@ When you run a command without `--app`/`--instance`:
 
 1. The CLI resolves the current repo's profile (normalized git remote → git common dir → current working directory).
 2. If linked, it uses the stored app ID and instance IDs.
-3. If not linked, it errors with guidance to run `clerk link`.
+3. If not linked, profile-dependent commands error with guidance to run `clerk link`. Accountless `api` and `users` workflows stay available when a local secret key supports them (e.g. `--secret-key`, `CLERK_SECRET_KEY`, or a key pulled into `.env*`).
 
 ## `--app` and `--instance` targeting
 

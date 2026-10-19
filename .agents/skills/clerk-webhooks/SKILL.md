@@ -62,7 +62,8 @@ export async function POST(req: NextRequest) {
   if (evt.type === 'user.updated') {
     const { id, email_addresses, first_name, last_name } = evt.data
     const email = email_addresses[0]?.email_address
-    await db.users.update({ where: { clerkId: id }, data: { email, first_name, last_name } })
+    const name = `${first_name ?? ''} ${last_name ?? ''}`.trim()
+    await db.users.upsert({ where: { clerkId: id }, update: { email, name }, create: { clerkId: id, email, name } })
   }
 
   if (evt.type === 'user.deleted') {
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
     const userId = public_user_data.user_id
 
     // Add to team_members table
-    await db.team_members.create({
+    await db.teamMembers.create({
       data: { orgId, userId, role },
     })
 
@@ -189,8 +190,8 @@ export async function POST(req: NextRequest) {
     const userId = public_user_data.user_id
 
     // Remove from team_members table
-    await db.team_members.delete({
-      where: { orgId, userId },
+    await db.teamMembers.delete({
+      where: { orgId_userId: { orgId, userId } },
     })
 
     // Remove workspace record

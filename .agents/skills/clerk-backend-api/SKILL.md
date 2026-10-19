@@ -20,27 +20,22 @@ Before ANY POST / PATCH / PUT / DELETE, you MUST do ALL of the following in your
    ```
    If empty, stop and ask the user. Do not proceed without a valid key.
 
-2. **Check CLERK_BAPI_SCOPES** — run:
-   ```bash
-   echo $CLERK_BAPI_SCOPES
-   ```
-   Inspect the output. If scopes are missing or do not include the required write permission, tell the user: *"This is a write operation and your current scopes may not allow it. Rerun with --admin to bypass?"* Do NOT attempt the request and fail — ask first.
+2. **For DELETE requests:** warn explicitly that the action is **IRREVERSIBLE** and list exactly what data will be permanently destroyed (user record, all sessions, all memberships, all associated data). Require explicit confirmation before proceeding. This warning is MANDATORY — never skip it.
 
-3. **For DELETE requests:** warn explicitly that the action is **IRREVERSIBLE** and list exactly what data will be permanently destroyed (user record, all sessions, all memberships, all associated data). Require explicit confirmation before proceeding. This warning is MANDATORY — never skip it.
-
-4. **For metadata operations:** always explain which metadata type is being used and why (see Metadata types section below).
+3. **For metadata operations:** always explain which metadata type is being used and why (see Metadata types section below).
 
 ---
 
 ## FAST PATH: Common operations (use directly, no spec fetching needed)
 
-For the operations below, skip spec fetching and execute immediately using these exact templates. Substitute `$CLERK_SECRET_KEY`, `$USER_ID`, `$ORG_ID`, `$EMAIL` as needed from the user's context.
+For the operations below, skip spec fetching and execute immediately using these exact templates. Substitute `$CLERK_SECRET_KEY`, `$USER_ID`, `$ORG_ID`, `$EMAIL` as needed from the user's context, and `$API_VERSION` with the selected spec version.
 
 ### Create organization + invite member (two-step)
 
 ```bash
 # Step 1 — Create organization
 ORG=$(curl -s -X POST "https://api.clerk.com/v1/organizations" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"name\": \"Acme Corp\", \"created_by\": \"$USER_ID\"}")
@@ -51,6 +46,7 @@ ORG_ID=$(echo "$ORG" | python3 -c "import sys,json; print(json.load(sys.stdin)['
 
 # Step 3 — Invite member with role
 curl -s -X POST "https://api.clerk.com/v1/organizations/${ORG_ID}/invitations" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"email_address\": \"user@example.com\", \"role\": \"org:admin\"}" \
@@ -68,13 +64,14 @@ import { clerkClient } from '@clerk/nextjs/server'
 // const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY })
 
 // Step 1: Create organization
-const org = await clerkClient.organizations.createOrganization({
+const client = await clerkClient()
+const org = await client.organizations.createOrganization({
   name: 'Acme Corp',
   createdBy: userId,  // required — the ID of the user creating the org
 })
 
 // Step 2: Invite member to the org
-const invitation = await clerkClient.organizations.createOrganizationInvitation({
+const invitation = await client.organizations.createOrganizationInvitation({
   organizationId: org.id,
   emailAddress: 'user@example.com',
   role: 'org:admin',  // or 'org:member'
@@ -91,10 +88,11 @@ const invitation = await clerkClient.organizations.createOrganizationInvitation(
 | Private | `private_metadata` | **Server only** | **Server only** | Stripe IDs, compliance flags, internal identifiers |
 | Unsafe | `unsafe_metadata` | Client + Server | Client + Server | Ephemeral UI state, onboarding steps (client-writable — avoid sensitive data) |
 
-**For `plan: 'pro'` and `onboarded: true` — use `public_metadata`** (frontend-readable, server-writable):
+**For `plan: 'pro'` and `onboarded: true` — use `public_metadata`** (frontend-readable, server-writable).
 
 ```bash
-curl -s -X PATCH "https://api.clerk.com/v1/users/${USER_ID}" \
+curl -s -X PATCH "https://api.clerk.com/v1/users/${USER_ID}/metadata" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" \
   -H "Content-Type: application/json" \
   -d '{"public_metadata": {"plan": "pro", "onboarded": true}}' \
@@ -107,30 +105,41 @@ curl -s -X PATCH "https://api.clerk.com/v1/users/${USER_ID}" \
 import { clerkClient } from '@clerk/nextjs/server'
 // OR: import { createClerkClient } from '@clerk/backend'
 
-await clerkClient.users.updateUser(userId, {
+const client = await clerkClient()
+await client.users.updateUserMetadata(userId, {
   publicMetadata: { plan: 'pro', onboarded: true },   // readable by client, writable server-only
   // privateMetadata: { stripeId: 'cus_xxx' },         // server-only read AND write
   // unsafeMetadata: { step: 'welcome' },              // client-writable, avoid sensitive data
 })
 ```
 
-**Note:** REST API uses `snake_case` (`public_metadata`). SDK uses `camelCase` (`publicMetadata`).
+**Note:** REST API uses `snake_case` (`public_metadata`). SDK uses `camelCase` (`publicMetadata`). `updateUserMetadata()` deep-merges metadata fields; use `replaceUserMetadata()` when replacement is intended.
 
 ### List users (last 7 days)
 
 ```bash
-curl -s "https://api.clerk.com/v1/users?limit=100&offset=0&order_by=-created_at&created_at=gt:$(date -d '7 days ago' +%s 2>/dev/null || date -v-7d +%s)000" \
+cutoff_ms="$(($(date -d '7 days ago' +%s 2>/dev/null || date -v-7d +%s) * 1000))"
+cursor=""
+while :; do
+  url="https://api.clerk.com/v1/users?limit=100&offset=0&order_by=-created_at&created_at_after=${cutoff_ms}"
+  [ -z "$cursor" ] || url="${url}&starting_after=${cursor}"
+  page="$(curl -s "$url" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" \
-  | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-if isinstance(data, list):
-    print(f'Found {len(data)} users:')
-    for u in data:
-        print(f'  {u[\"id\"]}: {u.get(\"email_addresses\", [{}])[0].get(\"email_address\", \"no email\")}')
-else:
-    print(json.dumps(data, indent=2))
-"
+  )"
+  printf '%s' "$page" | python3 -c '
+import json, sys
+for user in json.load(sys.stdin):
+    emails = user.get("email_addresses") or []
+    email = emails[0].get("email_address") if emails else None
+    uid = user["id"]
+    label = email or "no email"
+    print(f"  {uid}: {label}")
+'
+  count="$(printf '%s' "$page" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+  cursor="$(printf '%s' "$page" | python3 -c 'import json,sys; users=json.load(sys.stdin); print(users[-1]["id"] if users else "")')"
+  [ "$count" -eq 100 ] && [ -n "$cursor" ] || break
+done
 ```
 
 ### Delete user (confirm required)
@@ -138,6 +147,7 @@ else:
 ```bash
 # ONLY run after explicit user confirmation
 curl -s -X DELETE "https://api.clerk.com/v1/users/${USER_ID}" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Deleted: {d}')"
 ```
@@ -154,7 +164,7 @@ Auth: `Authorization: Bearer $CLERK_SECRET_KEY` on every request.
 **List users**
 ```
 GET /v1/users
-Query params: limit (max 500, default 10), offset, order_by (+/-created_at, +/-updated_at, +/-email_address, +/-web3wallet, +/-first_name, +/-last_name, +/-phone_number, +/-username, +/-last_active_at, +/-last_sign_in_at), email_address[], phone_number[], username[], web3wallet[], user_id[], query, created_at (ISO 8601 range: gt:TIMESTAMP or lt:TIMESTAMP in Unix ms)
+Query params: limit (max 500, default 10), offset, starting_after, order_by (+/-created_at, +/-updated_at, +/-email_address, +/-web3wallet, +/-first_name, +/-last_name, +/-phone_number, +/-username, +/-last_active_at, +/-last_sign_in_at), email_address[], phone_number[], username[], web3wallet[], user_id[], query, created_at_after (Unix timestamp in milliseconds)
 Returns: array of User objects
 ```
 
@@ -166,8 +176,8 @@ Returns: User object
 
 **Update user**
 ```
-PATCH /v1/users/{user_id}
-Body (JSON, snake_case): { public_metadata, private_metadata, unsafe_metadata, first_name, last_name, username, ... }
+PATCH /v1/users/{user_id}/metadata
+Body (JSON, snake_case): { public_metadata, private_metadata, unsafe_metadata }
 ```
 
 **Delete user — IRREVERSIBLE**
@@ -206,15 +216,19 @@ Returns: OrganizationInvitation object
 
 **ALWAYS execute requests with direct `curl` commands.** Use the spec-extraction scripts (`api-specs-context.sh`, `extract-tags.js`, `extract-endpoint-detail.sh`) to discover endpoints, but make actual API calls with `curl`.
 
+Set `API_VERSION` to the selected spec version. Send that version in the `Clerk-API-Version` header for every direct request; do not also add it as a query parameter.
+
 Template for GET requests:
 ```bash
 curl -s "https://api.clerk.com/v1${PATH}${QUERY_STRING}" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY"
 ```
 
 Template for POST/PATCH requests:
 ```bash
 curl -s -X ${METHOD} "https://api.clerk.com/v1${PATH}" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" \
   -H "Content-Type: application/json" \
   -d '${BODY_JSON}'
@@ -223,6 +237,7 @@ curl -s -X ${METHOD} "https://api.clerk.com/v1${PATH}" \
 Template for DELETE requests:
 ```bash
 curl -s -X DELETE "https://api.clerk.com/v1${PATH}" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY"
 ```
 
@@ -249,7 +264,6 @@ Use the output to determine the latest version and available tags.
 - Always disregard endpoints/schemas related to `platform`.
 - Always confirm before performing write requests (POST/PUT/PATCH/DELETE).
 - For DELETE operations, always warn the user that the action is **irreversible** and mention what data will be lost (user record, sessions, memberships). This warning is MANDATORY — never skip it.
-- For write operations (POST/PUT/PATCH/DELETE), check `CLERK_BAPI_SCOPES` before attempting the request. If missing or insufficient, ask the user upfront. Do NOT attempt and fail — ask before executing. This check is MANDATORY.
 - For metadata operations, always explain all three types (public, private, unsafe) and recommend the appropriate one.
 - Pagination: always use `limit` + `offset` and mention that results may be paginated for large datasets.
 - Use direct curl commands for all API calls.
@@ -273,23 +287,9 @@ Use the output to determine the latest version and available tags.
 
 `currentUser()` makes a real API call that counts against rate limits. Use `auth()` for just the session claims — it reads from the token without an API call.
 
-### Metadata Overwrites (Not Merges)
+### Metadata Update Semantics
 
-`updateUser({ publicMetadata: { role: 'admin' } })` REPLACES all public metadata, not merges. To add a field without losing existing data: read first, spread, then write.
-
-Wrong:
-```typescript
-await clerkClient.users.updateUser(userId, { publicMetadata: { newField: 'value' } })
-```
-This DELETES all other `publicMetadata` fields.
-
-Right:
-```typescript
-const user = await clerkClient.users.getUser(userId)
-await clerkClient.users.updateUser(userId, {
-  publicMetadata: { ...user.publicMetadata, newField: 'value' },
-})
-```
+Use `updateUserMetadata()` to deep-merge metadata fields without reading and spreading the existing value. Use `replaceUserMetadata()` only when intentional replacement is required.
 
 ---
 
@@ -336,7 +336,6 @@ Inspect
   /clerk-backend-api POST /invitations -h   — view request/response details
 
 Options
-  --admin                            — bypass scope restrictions for write/delete
   --version [date], version [date]   — use a specific spec version
   --help, -h, help                   — inspect endpoint instead of executing
 ```
@@ -406,6 +405,7 @@ curl -s https://raw.githubusercontent.com/clerk/openapi-specs/main/bapi/${versio
 **Example — list users and parse response:**
 ```bash
 RESPONSE=$(curl -s "https://api.clerk.com/v1/users?limit=10" \
+  -H "Clerk-API-Version: ${API_VERSION}" \
   -H "Authorization: Bearer $CLERK_SECRET_KEY")
 echo "$RESPONSE" | python3 -c "
 import sys, json
@@ -413,7 +413,9 @@ data = json.load(sys.stdin)
 if isinstance(data, list):
     print(f'Found {len(data)} users:')
     for u in data:
-        print(f'  {u[\"id\"]}: {u.get(\"email_addresses\", [{}])[0].get(\"email_address\", \"no email\")}')
+        emails = u.get('email_addresses') or []
+        email = emails[0].get('email_address', 'no email') if emails else 'no email'
+        print(f'  {u[\"id\"]}: {email}')
 else:
     print(json.dumps(data, indent=2))
 "

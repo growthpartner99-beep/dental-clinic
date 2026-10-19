@@ -93,8 +93,8 @@ export const GET: APIRoute = ({ locals }) => {
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `Astro.locals.auth` is undefined | Missing middleware | Add `clerkMiddleware` to `src/middleware.ts` |
-| Auth works in dev but not production | `output: 'static'` globally | Set `output: 'server'` or `hybrid` for protected pages |
-| Static page has no auth | Prerendered pages skip middleware | Use `export const prerender = false` or move to island |
+| Protected page has no auth in production | No server adapter is configured, or the page is still prerendered | Configure an adapter and `output: 'server'`, or set `export const prerender = false` on that page |
+| Static page has no auth | Prerendered pages skip middleware | Use client-side auth in an island, or set `export const prerender = false` and configure an adapter |
 | Island not reactive to sign-in | Missing `client:load` directive | Add `client:load` to the island component |
 
 ## Import Map

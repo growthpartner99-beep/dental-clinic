@@ -1,4 +1,4 @@
-const { withAppBuildGradle } = require('@expo/config-plugins');
+const { withGradleProperties } = require('expo/config-plugins');
 
 // Windows caps file paths at MAX_PATH (260), and ninja enforces that cap with
 // its own hardcoded check. React Native's autolinked codegen sources live deep
@@ -14,32 +14,21 @@ const { withAppBuildGradle } = require('@expo/config-plugins');
 const OBJECT_PATH_MAX = '250';
 
 module.exports = function withCmakeObjectPathMax(config) {
-  return withAppBuildGradle(config, (mod) => {
-    if (mod.modResults.contents.includes('CMAKE_OBJECT_PATH_MAX')) {
-      return mod;
-    }
-
-    // arguments() lives on defaultConfig.externalNativeBuild.cmake
-    // (ExternalNativeCmakeOptions). It does NOT exist on the top-level
-    // android.externalNativeBuild.cmake block, which is a CmakeOptions
-    // exposing only path and buildStagingDirectory.
-    const updated = mod.modResults.contents.replace(
-      /^(\s*)defaultConfig \{$/m,
-      (match, indent) =>
-        `${indent}defaultConfig {\n` +
-        `${indent}    externalNativeBuild {\n` +
-        `${indent}        cmake {\n` +
-        `${indent}            arguments "-DCMAKE_OBJECT_PATH_MAX=${OBJECT_PATH_MAX}"\n` +
-        `${indent}        }\n` +
-        `${indent}    }\n`
+  return withGradleProperties(config, (mod) => {
+    const property = mod.modResults.find(
+      (item) => item.type === 'property' && item.key === 'expo.android.cmakeObjectPathMax'
     );
 
-    if (updated === mod.modResults.contents) {
-      throw new Error(
-        'withCmakeObjectPathMax: could not find a "defaultConfig {" block in android/app/build.gradle'
-      );
+    if (property) {
+      property.value = OBJECT_PATH_MAX;
+    } else {
+      mod.modResults.push({
+        type: 'property',
+        key: 'expo.android.cmakeObjectPathMax',
+        value: OBJECT_PATH_MAX,
+      });
     }
-    mod.modResults.contents = updated;
+
     return mod;
   });
 };

@@ -24,7 +24,7 @@ Implement native Android auth with Clerk prebuilt Compose views (`AuthView`, `Us
 
 3. Initialization and state gating
 - Treat SDK initialization as async/non-blocking.
-- Gate signed-in/signed-out rendering using `Clerk.isInitialized` and `Clerk.userFlow`.
+- Gate app content on a session whose status is `ACTIVE`. Keep `PENDING` sessions in their explicit pending-session flow rather than treating them as signed in or signed out.
 - Show loading while initialization is in progress.
 
 4. Signed-in/out presentation pattern

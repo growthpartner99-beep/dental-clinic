@@ -97,7 +97,7 @@ After successful sign-up and verification, call `finalize()` to activate the ses
 ```typescript
 await signUp.finalize({
   navigate: async ({ session, decorateUrl }) => {
-    const destination = session.currentTask
+    const destination = session?.currentTask
       ? `/sign-up/tasks/${session.currentTask.key}`
       : '/'
     const url = decorateUrl(destination)
@@ -167,10 +167,11 @@ export default function SignUpPage() {
     const phoneNumber = formData.get('phoneNumber') as string
 
     // For email OTP: change create({ phoneNumber }) to create({ emailAddress })
-    const error = await signUp.create({ phoneNumber })
+    const { error } = await signUp.create({ phoneNumber })
+    if (error) return
 
     // For email OTP: change sendPhoneCode() to sendEmailCode()
-    if (!error) await signUp.verifications.sendPhoneCode()
+    await signUp.verifications.sendPhoneCode()
   }
 
   const handleVerify = async (formData: FormData) => {

@@ -34,9 +34,15 @@ const result = await signIn.create({
 If additional verification is needed (email code, phone code):
 
 ```typescript
+// Select the matching factor from the server-supported list
+const factor = signIn.supportedFirstFactors?.find(
+  (f) => f.strategy === 'email_code', // or 'phone_code'
+)
+
 // Prepare first factor
 await signIn.prepareFirstFactor({
   strategy: 'email_code', // or 'phone_code'
+  emailAddressId: factor?.emailAddressId, // use phoneNumberId for 'phone_code'
 })
 
 // Attempt first factor
@@ -77,8 +83,14 @@ await setActive({ session: signIn.createdSessionId })
 // 1. Start reset flow
 await signIn.create({ strategy: 'reset_password_email_code', identifier: 'user@example.com' })
 
-// or prepare after initial create:
-await signIn.prepareFirstFactor({ strategy: 'reset_password_email_code' })
+// or prepare after initial create — pass the emailAddressId from the supported factor:
+const resetFactor = signIn.supportedFirstFactors?.find(
+  (f) => f.strategy === 'reset_password_email_code',
+)
+await signIn.prepareFirstFactor({
+  strategy: 'reset_password_email_code',
+  emailAddressId: resetFactor?.emailAddressId,
+})
 
 // 2. Verify reset code
 await signIn.attemptFirstFactor({ strategy: 'reset_password_email_code', code: '123456' })
@@ -166,6 +178,9 @@ export default function SignInPage() {
     setError('')
 
     try {
+      // This example verifies a TOTP code only. Users with other factors (phone_code,
+      // backup_code) must first check signIn.supportedSecondFactors and prepare the
+      // factor via signIn.prepareSecondFactor({ strategy, phoneNumberId }).
       const result = await signIn.attemptSecondFactor({
         strategy: 'totp',
         code: mfaCode,

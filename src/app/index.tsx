@@ -1,16 +1,16 @@
-import { Show, useClerk, useSSO, useUser } from "@clerk/expo";
+import { Show, useClerk, useUser } from "@clerk/expo";
+import { useSignInWithGoogle } from "@clerk/expo/google";
+import { useSignInWithApple } from "@clerk/expo/apple";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-
-const CARD_HEIGHT = 435;
-
-type SocialStrategy = "oauth_apple" | "oauth_google";
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
 // Hero art position, matched to Design/auth-screen-design.png (fit via offline search)
 const HERO = { top: 63, left: -29, width: 442, height: 328 };
+
+const CARD_HEIGHT = 435;
 
 const BG_COLORS = [
   "#CDE8F8",
@@ -40,25 +40,56 @@ const HAZE_COLORS = [
 ] as const;
 
 export default function AuthScreen() {
-  const { startSSOFlow } = useSSO();
-  const [pending, setPending] = useState<SocialStrategy | null>(null);
+  const { startGoogleAuthenticationFlow } = useSignInWithGoogle();
+  const { startAppleAuthenticationFlow } = useSignInWithApple();
+  const clerk = useClerk();
+  const [pending, setPending] = useState<"google" | "apple" | null>(null);
 
-  const onPressSocial = async (strategy: SocialStrategy) => {
+  const onPressGoogle = async () => {
     if (pending) return;
-    setPending(strategy);
+    setPending("google");
     try {
-      const { createdSessionId, setActive, signUp } = await startSSOFlow({
-        strategy,
-      });
-      // SSO is the one flow that still requires activating the session manually.
+      const { createdSessionId, setActive } = await startGoogleAuthenticationFlow();
       if (createdSessionId && setActive) {
         await setActive({ session: createdSessionId });
-      } else if (signUp?.status === "missing_requirements") {
-        console.warn("Sign-up missing requirements:", signUp.missingFields);
+        if (clerk.session?.currentTask) {
+          await clerk.redirectToTasks();
+        }
       }
-      // No session and no missing requirements = user cancelled; stay silent.
-    } catch (err) {
-      console.error("Social sign-in failed:", JSON.stringify(err, null, 2));
+    } catch (err: any) {
+      if (err.code === "SIGN_IN_CANCELLED" || err.code === "-5") {
+        return; // User cancelled, stay silent
+      }
+      console.error("Google sign-in failed:", JSON.stringify(err, null, 2));
+      Alert.alert(
+        "Sign-in didn't finish",
+        "Please try again. If it keeps failing, contact the clinic.",
+      );
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const onPressApple = async () => {
+    if (pending) return;
+    setPending("apple");
+    try {
+      const { createdSessionId, setActive } = await startAppleAuthenticationFlow();
+      if (createdSessionId && setActive) {
+        await setActive({ session: createdSessionId });
+        if (clerk.session?.currentTask) {
+          await clerk.redirectToTasks();
+        }
+      }
+    } catch (err: any) {
+      if (err.code === "ERR_REQUEST_CANCELED") {
+        return; // User cancelled, stay silent
+      }
+      console.error("Apple sign-in failed:", JSON.stringify(err, null, 2));
+      Alert.alert(
+        "Sign-in didn't finish",
+        "Please try again. If it keeps failing, contact the clinic.",
+      );
     } finally {
       setPending(null);
     }
@@ -104,27 +135,11 @@ export default function AuthScreen() {
 
             <Text style={styles.subtitle}>Modern dental care, made easy.</Text>
 
+            {/* Google Sign-In Button */}
             <Pressable
               accessibilityRole="button"
               disabled={pending !== null}
-              onPress={() => onPressSocial("oauth_apple")}
-              style={({ pressed }) => [
-                styles.button,
-                styles.appleButton,
-                pressed && styles.buttonPressed,
-              ]}
-            >
-              <Image
-                source={require("../../assets/images/apple-logo.png")}
-                style={styles.appleIcon}
-              />
-              <Text style={styles.appleLabel}>Continue with Apple</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              disabled={pending !== null}
-              onPress={() => onPressSocial("oauth_google")}
+              onPress={onPressGoogle}
               style={({ pressed }) => [
                 styles.button,
                 styles.googleButton,
@@ -138,6 +153,26 @@ export default function AuthScreen() {
               />
               <Text style={styles.googleLabel}>Continue with Google</Text>
             </Pressable>
+
+            {/* Apple Sign-In Button (iOS only) */}
+            {Platform.OS === "ios" && (
+              <Pressable
+                accessibilityRole="button"
+                disabled={pending !== null}
+                onPress={onPressApple}
+                style={({ pressed }) => [
+                  styles.button,
+                  styles.appleButton,
+                  pressed && styles.buttonPressed,
+                ]}
+              >
+                <Image
+                  source={require("../../assets/images/apple-logo.png")}
+                  style={styles.appleIcon}
+                />
+                <Text style={styles.appleLabel}>Continue with Apple</Text>
+              </Pressable>
+            )}
 
             <View style={styles.footerBlock}>
               <View style={styles.footerRow}>
@@ -279,24 +314,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#05080D",
     paddingLeft: 45.5,
     gap: 36,
-    marginTop: 25.75,
+    marginTop: 18.7,
     shadowColor: "#1975AD",
     shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.15,
     shadowRadius: 10,
     elevation: 4,
-  },
-  buttonPressed: {
-    opacity: 0.85,
-  },
-  appleIcon: {
-    width: 20.5,
-    height: 24.6,
-  },
-  appleLabel: {
-    fontFamily: "Figtree600",
-    fontSize: 15,
-    color: "#FFFFFF",
   },
   googleButton: {
     marginTop: 18.7,
@@ -318,6 +341,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 10,
     elevation: 4,
+  },
+  buttonPressed: {
+    opacity: 0.85,
+  },
+  appleIcon: {
+    width: 20.5,
+    height: 24.6,
+  },
+  appleLabel: {
+    fontFamily: "Figtree600",
+    fontSize: 15,
+    color: "#FFFFFF",
   },
   googleBorder: {
     position: "absolute",

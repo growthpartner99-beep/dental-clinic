@@ -21,7 +21,7 @@ export default async function ProDashboard() {
 		redirect('/sign-in')
 	}
 
-	if (!has({ plan: 'pro' })) {
+	if (!has({ plan: 'user:pro' })) {
 		redirect('/pricing')
 	}
 
@@ -39,9 +39,9 @@ import { auth } from '@clerk/nextjs/server'
 export default async function AppPage() {
 	const { has } = await auth()
 
-	const canAnalytics = has({ feature: 'analytics' })
-	const canExport = has({ feature: 'export' })
-	const canApi = has({ feature: 'api_access' })
+	const canAnalytics = has({ feature: 'user:analytics' })
+	const canExport = has({ feature: 'user:export' })
+	const canApi = has({ feature: 'user:api_access' })
 
 	return (
 		<div>
@@ -66,7 +66,7 @@ import { redirect } from 'next/navigation'
 export default async function BillingSuccessPage() {
 	const { has } = await auth()
 
-	if (!has({ plan: 'pro' })) {
+	if (!has({ plan: 'user:pro' })) {
 		return <p>Waiting for subscription to activate...</p>
 	}
 
@@ -117,7 +117,7 @@ import { useAuth } from '@clerk/nextjs'
 export function ExportButton() {
 	const { has } = useAuth()
 
-	if (!has?.({ plan: 'pro' })) {
+	if (!has?.({ plan: 'user:pro' })) {
 		return (
 			<button disabled title="Pro plan required">
 				Export (Pro)
@@ -130,4 +130,3 @@ export function ExportButton() {
 ```
 
 Note: `has` may be `undefined` on initial render. Use optional chaining `has?.()`.
-

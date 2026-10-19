@@ -40,7 +40,7 @@ If Expo/React Native signals are present, route to the general setup skill inste
 |------|--------|
 | 1 | Confirm project type is native Android and not Expo/React Native |
 | 2 | Determine flow type (`prebuilt` or `custom`) and load the matching reference file |
-| 3 | Ensure a real Clerk publishable key exists (or ask developer) |
+| 3 | Ensure a real Clerk publishable key exists — inspect project configuration first; ask the developer only if no usable key is configured |
 | 4 | Ensure correct Clerk artifacts are installed for the selected flow |
 | 5 | Read official Android quickstart and verify required setup (Native API, min SDK/Java, manifest, initialization) |
 | 6 | Inspect `clerk-android` source/sample patterns relevant to selected flow |
@@ -88,12 +88,14 @@ Before any implementation edits, the agent must have both:
 - flow choice: `prebuilt` or `custom`
 - a real Clerk publishable key
 
-If either value is missing from the user request/context:
+Before asking for a publishable key, inspect the project configuration for an existing usable key (for example `local.properties`, `BuildConfig`/gradle fields, `Clerk.initialize(...)` call sites, or manifest placeholders) without exposing it.
+
+If either value is missing from the user request/context and the project configuration:
 - ask the user for the missing value(s)
 - pause and wait for the answer
 - do not edit files or install dependencies yet
 
-Only skip asking when the user has already explicitly provided the value in this conversation.
+Only skip asking when the user has explicitly provided the value in this conversation or a usable key is already configured in the project.
 
 ## Source-Driven Templates
 
@@ -115,7 +117,7 @@ Do not hardcode implementation examples in this skill. Inspect current `clerk-an
 
 2. Missing flow or key must trigger a question
 - If flow choice is missing, explicitly ask: prebuilt views or custom flow.
-- If publishable key is missing/placeholder/invalid, explicitly ask for a real key.
+- If no usable publishable key is configured (inspect `local.properties`, `BuildConfig`/gradle fields, `Clerk.initialize(...)` call sites, or manifest placeholders first), explicitly ask for a real key.
 - Do not continue until both answers are provided.
 
 3. Publishable key wiring mode is mandatory
@@ -151,8 +153,8 @@ Do not hardcode implementation examples in this skill. Inspect current `clerk-an
 
 1. Detect native Android vs Expo/React Native.
 2. If flow type is not explicitly provided, ask user for `prebuilt` or `custom`.
-3. If publishable key is not explicitly provided, ask user for it.
-4. Wait for both answers before changing files.
+3. If publishable key is not explicitly provided, inspect project configuration; ask the user only if no usable key is configured.
+4. Wait for the missing answer(s) before changing files.
 5. Load matching flow reference file.
 6. Ensure `Clerk.initialize(...)` path and publishable key wiring are valid.
 7. Ensure dependencies/artifacts match selected flow.
@@ -165,7 +167,7 @@ Do not hardcode implementation examples in this skill. Inspect current `clerk-an
 | Level | Issue | Prevention |
 |-------|-------|------------|
 | CRITICAL | Not asking for missing flow choice before implementation | Ask for `prebuilt` vs `custom` and wait before edits |
-| CRITICAL | Not asking for missing publishable key before implementation | Ask for key and wait before edits |
+| CRITICAL | Not inspecting project configuration before asking for a publishable key | Inspect `local.properties`, `BuildConfig`/gradle fields, and `Clerk.initialize(...)` call sites for a usable key; ask only if none is configured |
 | CRITICAL | Starting implementation before flow type is confirmed | Confirm flow first and load matching reference |
 | CRITICAL | Skipping Android quickstart prerequisites | Verify and apply required setup from official Android quickstart |
 | CRITICAL | Missing app-level `Clerk.initialize(...)` call | Initialize Clerk from `Application` startup path |

@@ -2,7 +2,7 @@
 
 ## Overview
 
-B2B billing in Clerk attaches subscriptions to **organizations**, not individual users. Each org gets its own subscription. Plans can carry a **seat limit** (membership cap) which Clerk enforces on member invites.
+B2B billing in Clerk attaches subscriptions to **organizations**, not individual users. Each org gets its own subscription. Plans can carry a **seat limit** (membership cap) which Clerk enforces on member invites, and optionally a **per-seat fee** so the charge scales with purchased seats.
 
 > **Create the plan as an Organization Plan, not a User Plan.** Use [Dashboard → Billing → Plans](https://dashboard.clerk.com/last-active?path=billing/plans) (Organization Plans tab) or `clerk config patch` with `billing.plans`. Slugs are scoped per type. A `team` plan registered under User Plans will not appear in `<PricingTable for="organization" />`, and vice versa. Plan type cannot be changed after creation, recreate if misplaced.
 
@@ -31,10 +31,10 @@ export default async function TeamDashboard() {
 
 ## Seat-Limit Plans
 
-Clerk Billing's B2B model is **seat-limit plans**: each organization plan has a fixed price and an optional membership cap; Clerk enforces the cap at invite/join time. To charge larger orgs more, create tiered plans (e.g. `starter` capped at 5, `team` at 10, `enterprise` unlimited) with increasing fixed prices.
+Clerk supports both **seat-limited plans** and **per-seat plans**. A seat-limited plan has a fixed price and membership cap that Clerk enforces at invite/join time. A per-seat plan charges based on the number of seats purchased. For fixed-price tiers, create plans such as `starter` capped at 5, `team` at 10, and `enterprise` with a larger cap.
 
 Key invariants:
-- **Fixed price per plan**, not auto-scaling per member. Adding members does not increment the org's billing amount on the active plan.
+- **Seat-limited plans are fixed-price**, with a membership cap; adding members does not increment the amount for that plan. **Per-seat plans charge according to purchased seats.**
 - **One `active` SubscriptionItem per payer per Plan.** Do not derive seat count from `items.length`.
 - **Seat limit is a Plan property.** Set it when creating the plan (Dashboard → Billing → Plans → Organization Plans tab, or `clerk config patch`); it cannot be changed later.
 - When an org exceeds or changes to a plan with a lower limit, existing members stay but new invites are blocked until the org is under cap. See [Plans with seat limits](https://clerk.com/docs/guides/billing/seat-limit-plans) for the exact admin behavior.
@@ -61,7 +61,8 @@ Organization Plans configured in Dashboard → Billing → Plans automatically a
 if (evt.type === 'subscription.created') {
 	const { id, payer, items, status } = evt.data
 	if (payer.organization_id) {
-		const plan = items[0]?.plan?.slug
+		const activeItem = items.find((item) => item.status === 'active' && item.plan?.slug)
+		const plan = activeItem?.plan?.slug
 		await db.orgSubscriptions.upsert({
 			where: { orgId: payer.organization_id },
 			create: {
@@ -75,19 +76,25 @@ if (evt.type === 'subscription.created') {
 	}
 }
 
-if (evt.type === 'subscription.updated') {
+if (
+	evt.type === 'subscription.updated' ||
+	evt.type === 'subscription.active' ||
+	evt.type === 'subscription.pastDue'
+) {
 	const { id, payer, items, status } = evt.data
 	if (payer.organization_id) {
-		const plan = items[0]?.plan?.slug
-		await db.orgSubscriptions.update({
+		const activeItem = items.find((item) => item.status === 'active' && item.plan?.slug)
+		const plan = activeItem?.plan?.slug
+		await db.orgSubscriptions.upsert({
 			where: { orgId: payer.organization_id },
-			data: { plan, status },
+			create: { orgId: payer.organization_id, plan, subscriptionId: id, status },
+			update: { plan, subscriptionId: id, status },
 		})
 	}
 }
 ```
 
-Use `payer.organization_id` (nested under `payer`, not a top-level `org_id`) when the subscription belongs to an organization. Do NOT use `items.length` as a seat count, seat limits are set at the plan level and there is only one active SubscriptionItem per payer per Plan.
+Use `payer.organization_id` (nested under `payer`, not a top-level `org_id`) when the subscription belongs to an organization. Status changes arrive on `subscription.updated`, `subscription.active`, and `subscription.pastDue` — the shared upsert above applies all three idempotently, so replays and out-of-order deliveries are safe. Do NOT use `items.length` as a seat count, seat limits are set at the plan level and there is only one active SubscriptionItem per payer per Plan.
 
 ## Plan Naming for B2B
 

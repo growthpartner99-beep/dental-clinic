@@ -32,6 +32,7 @@ Source priority rules for custom flow:
 3. Initialization and state contract
 - Initialize via `Clerk.initialize(...)` at app startup.
 - Wait for `Clerk.isInitialized` before treating Clerk as ready.
+- Gate signed-in app content on a session whose status is `ACTIVE`. Handle `PENDING` sessions explicitly in the pending-session flow rather than treating them as signed in or signed out.
 - Drive session/user UI from `Clerk.userFlow`/`Clerk.sessionFlow`.
 
 4. Capability-driven flow logic

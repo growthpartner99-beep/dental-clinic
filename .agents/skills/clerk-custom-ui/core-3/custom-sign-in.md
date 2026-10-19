@@ -37,6 +37,14 @@ const { error } = await signIn.sso({
 })
 ```
 
+The `redirectCallbackUrl` route must render the SDK's SSO callback handler, `<HandleSSOCallback />` (requires `@clerk/nextjs` 7.9.13+ or `@clerk/react` 6.17.7+). It completes the SSO handshake when the user returns from the identity provider, then calls the handler matching the outcome:
+
+| Callback | When | Action |
+|----------|------|--------|
+| `navigateToApp` | Session was created | Enter the app — navigate with `decorateUrl('/')` (see [Finalizing Sign-In](#finalizing-sign-in) for Safari ITP) |
+| `navigateToSignIn` | Sign-in needs another step (e.g. MFA) | Route back to your sign-in flow (see MFA below) |
+| `navigateToSignUp` | Sign-up needs more information | Route to a page that collects the missing fields and submits them with `signUp.update()` |
+
 ### Passkey
 
 ```typescript
@@ -81,7 +89,7 @@ const { error } = await signIn.phoneCode.verifyCode({ code: '123456' })
 
 A second factor is required when `signIn.status` is one of:
 - `'needs_second_factor'` — user has MFA enabled (TOTP, backup codes, etc.)
-- `'needs_client_trust'` — new device sign-in without MFA; requires email or phone code verification
+- `'needs_client_trust'` — new device sign-in without MFA; requires verification by email code, SMS code, or email link, depending on your Clerk Dashboard settings
 
 ```typescript
 // TOTP (Authenticator app)
@@ -126,6 +134,8 @@ if (signIn.status === 'needs_client_trust') {
 }
 ```
 
+> **Scope:** the `mfa` methods above cover the code factors (`email_code`, `phone_code`). If `supportedSecondFactors` includes `email_link` (email link verification enabled in the Clerk Dashboard), follow the [device trust guide](https://clerk.com/docs/guides/development/custom-flows/authentication/device-trust) for that flow — this skill does not document it.
+
 ## Finalizing Sign-In
 
 After successful authentication, call `finalize()` to activate the session:
@@ -133,7 +143,7 @@ After successful authentication, call `finalize()` to activate the session:
 ```typescript
 await signIn.finalize({
   navigate: async ({ session, decorateUrl }) => {
-    const destination = session.currentTask
+    const destination = session?.currentTask
       ? `/sign-in/tasks/${session.currentTask.key}`
       : '/'
     const url = decorateUrl(destination)

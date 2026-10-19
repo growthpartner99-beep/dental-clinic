@@ -19,9 +19,9 @@ function IndexPopup() {
   return (
     <ClerkProvider
       publishableKey={PUBLISHABLE_KEY}
-      afterSignOutUrl={`${EXTENSION_URL}/popup.html`}
-      signInFallbackRedirectUrl={`${EXTENSION_URL}/popup.html`}
-      signUpFallbackRedirectUrl={`${EXTENSION_URL}/popup.html`}
+      afterSignOutUrl={`${EXTENSION_URL}popup.html`}
+      signInFallbackRedirectUrl={`${EXTENSION_URL}popup.html`}
+      signUpFallbackRedirectUrl={`${EXTENSION_URL}popup.html`}
     >
       <div className="plasmo-flex plasmo-items-center plasmo-justify-center plasmo-h-[600px] plasmo-w-[800px] plasmo-flex-col">
         <header className="plasmo-w-full">

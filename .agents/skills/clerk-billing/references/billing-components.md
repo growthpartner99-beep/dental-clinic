@@ -19,7 +19,7 @@ export default function PricingPage() {
 - Shows current plan for subscribed users with upgrade/downgrade options
 
 **Key behaviors:**
-- Respects the active entity by default: user subscription for personal accounts, org subscription in org context. Override with `for`.
+- B2C pages default to user plans. B2B pages must explicitly set `for="organization"`; omitting it targets user plans even when an organization is active.
 - For an account-management UI that includes plan switching, cancellations, payment methods, and invoices, render `<UserProfile />` (B2C) or `<OrganizationProfile />` (B2B) instead. Use `<PricingTable />` standalone only when you need a dedicated pricing page.
 
 **Props (all optional):**
@@ -34,7 +34,7 @@ export default function PricingPage() {
 | `for` | `'user' \| 'organization'` | Which subscriber the table targets. Defaults to `'user'`. **Use `'organization'` for B2B.** |
 | `newSubscriptionRedirectUrl` | `string` | URL to navigate to after checkout completes. |
 
-For most cases, use `<PricingTable />` with no props (or just `for="organization"` for B2B).
+For most B2C cases, use `<PricingTable />`; for B2B, explicitly set `<PricingTable for="organization" />`.
 
 ## CheckoutButton
 
@@ -100,7 +100,7 @@ const canManageBilling = has({ plan: 'pro' }) && orgRole === 'org:admin'
 
 `has()` checks the **active session claims**. Plans and features are embedded in the Clerk session token after a subscription is active. The check does NOT make a network request.
 
-If a user subscribes and then `has()` returns false, the session token needs to refresh. This happens automatically on the next page load or after calling `clerk.session.reload()` on the client.
+If a user subscribes and then `has()` returns false, refresh the session claims with a supported method such as `await user.reload()` or `await getToken({ skipCache: true })`.
 
 ## Show Component (Billing-aware)
 

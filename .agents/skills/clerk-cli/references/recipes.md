@@ -65,9 +65,9 @@ clerk api /users/user_abc123 -X DELETE --dry-run
 clerk api /users/user_abc123 -X DELETE --yes
 ```
 
-### Test users (development only)
+### Test users
 
-For test accounts you need to sign into without real email or SMS delivery, Clerk provides two magic patterns that both verify with the fixed OTP `424242`. Use them on development instances; production rejects them.
+For test accounts you need to sign into without real email or SMS delivery, Clerk provides two magic patterns that both verify with the fixed OTP `424242`. They work whenever test mode is enabled — including on production instances.
 
 **By email.** Any address with the `+clerk_test` subaddress is recognized as a test email. The domain portion is arbitrary.
 
@@ -94,7 +94,7 @@ clerk users create -d '{
 
 When signing in as either user in a browser or Playwright, enter `424242` at the OTP prompt.
 
-These patterns only apply to development instances. In production, Device Trust blocks sign-in regardless of suffix or number, and using real-looking test addresses is highly discouraged. Test addresses and numbers do not count against the dev-instance monthly caps (20 SMS, 100 emails). See [Clerk's test emails and phones reference](https://clerk.com/docs/guides/development/testing/test-emails-and-phones) for the full contract.
+These patterns work whenever test mode is enabled, on development and production instances alike. Device Trust still applies in production, but only to password sign-ins from a new device when the user has no MFA — it does not block these OTP sign-ins. Using real-looking test addresses is highly discouraged. Test addresses and numbers do not count against the dev-instance monthly caps (20 SMS, 100 emails). See [Clerk's test emails and phones reference](https://clerk.com/docs/guides/development/testing/test-emails-and-phones) for the full contract.
 
 ## Organizations
 
@@ -320,10 +320,22 @@ jq -n '{email_address:["c@d.co"]}' | clerk api /users
 ### Loop safely
 
 ```sh
-# Always --dry-run first across the whole set. `users list` paginates;
-# bump --limit (max 250) and walk pages with --offset until .hasMore is false.
-for id in $(clerk users list --json --limit 250 | jq -r '.data[] | .id'); do
-  clerk api /users/$id -X PATCH -d '{"public_metadata":{"migrated":true}}' --dry-run
+# API-version-sensitive metadata update. First read `clerk-api-version` from a
+# read-only response (`clerk api /users/user_abc123 --include`, headers on
+# stderr): when it is 2026-05-12, PATCH /v1/users/{user_id}/metadata as below;
+# otherwise pin a compatible API version explicitly (e.g. append
+# ?__clerk_api_version=<version>) instead of relying on the server default.
+# Always --dry-run first across the whole set, and walk every page of
+# `users list` (--limit max 250) until .hasMore is false.
+offset=0
+while :; do
+  page="/tmp/users-${offset}.json"
+  clerk users list --json --limit 250 --offset "$offset" > "$page"
+  for id in $(jq -r '.data[] | .id' "$page"); do
+    clerk api "/users/$id/metadata" -X PATCH -d '{"public_metadata":{"migrated":true}}' --dry-run
+  done
+  [ "$(jq -r '.hasMore' "$page")" = "true" ] || break
+  offset=$((offset + 250))
 done
 # Re-run without --dry-run once the previews look right
 ```

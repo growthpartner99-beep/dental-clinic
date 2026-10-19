@@ -28,22 +28,21 @@ if (!publishableKey || !syncHost) {
   throw new Error('Missing publishable key or sync host')
 }
 
+// Create the client once so every helper and tab update reuses one instance.
+const clerkPromise = createClerkClient({
+  publishableKey,
+  syncHost,
+  background: true,
+})
+
 async function getAuthenticatedUser() {
-  const clerk = await createClerkClient({
-    publishableKey,
-    syncHost,
-    background: true,
-  })
+  const clerk = await clerkPromise
 
   return clerk.user
 }
 
 async function getSessionToken(): Promise<string | null> {
-  const clerk = await createClerkClient({
-    publishableKey,
-    syncHost,
-    background: true,
-  })
+  const clerk = await clerkPromise
 
   if (!clerk.session) return null
 
@@ -53,17 +52,21 @@ async function getSessionToken(): Promise<string | null> {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return
 
-  const token = await getSessionToken()
-  if (!token) return
+  try {
+    const token = await getSessionToken()
+    if (!token) return
 
-  await fetch('https://api.yourapp.com/page-visit', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ url: tab.url }),
-  })
+    await fetch('https://api.yourapp.com/page-visit', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url: tab.url }),
+    })
+  } catch (error) {
+    console.error('[Headless extension] Failed to record page visit:', JSON.stringify(error))
+  }
 })
 ```
 

@@ -12,13 +12,13 @@ Subscription events (4):
 - `subscription.active`
 - `subscription.pastDue`
 
-SubscriptionItem events (10):
+SubscriptionItem events (10, verified against the current `@clerk/backend` webhook union):
+- `subscriptionItem.created`
 - `subscriptionItem.updated`
 - `subscriptionItem.active`
 - `subscriptionItem.canceled`
 - `subscriptionItem.upcoming`
 - `subscriptionItem.ended`
-- `subscriptionItem.expired`
 - `subscriptionItem.abandoned`
 - `subscriptionItem.incomplete`
 - `subscriptionItem.pastDue`
@@ -39,7 +39,7 @@ Clerk billing webhook payloads are nested. Common mistakes come from destructuri
 - `evt.data.status`: server-side status string (snake_case, e.g. `past_due`, even though event names are camelCase)
 - `evt.data.items[]`: on subscription events only, the array of subscription items
 - `evt.data.items[i].plan.slug`: the plan slug for a given item (plan is a nested object)
-- On subscriptionItem events, the event data IS the item. There is no `subscription_id` back-reference, so match by `payer` + `plan.slug` or persist item ids independently.
+- On subscriptionItem events, the event data IS the item. There is no `subscription_id` back-reference, and payer/plan fields may be absent, so persist the required item id and use it as the update key.
 
 ## Complete Billing Webhook Handler
 
@@ -56,53 +56,90 @@ export async function POST(req: NextRequest) {
 		return new Response('Verification failed', { status: 400 })
 	}
 
-	if (evt.type === 'subscription.created' || evt.type === 'subscription.active') {
-		const { id, payer, items, status } = evt.data
+	if (
+		evt.type === 'subscription.created' ||
+		evt.type === 'subscription.updated' ||
+		evt.type === 'subscription.active' ||
+		evt.type === 'subscription.pastDue'
+	) {
+		const { id, payer, items, status, updated_at } = evt.data
 		const entityId = payer.organization_id ?? payer.user_id
-		const plan = items[0]?.plan?.slug
-		await db.subscriptions.upsert({
-			where: { subscriptionId: id },
-			create: { subscriptionId: id, entityId, plan, status },
-			update: { entityId, plan, status },
-		})
+		const activeItem = items.find((item) => item.status === 'active' && item.plan?.slug)
+		const plan = activeItem?.plan?.slug
+
+		// Implement this as one atomic upsert. The conditional conflict update
+		// ignores stale webhook deliveries; source_updated_at is a DB timestamp column.
+		await db.$executeRaw`
+			INSERT INTO subscriptions (subscription_id, entity_id, plan, status, source_updated_at)
+			VALUES (${id}, ${entityId}, ${plan}, ${status}, ${new Date(updated_at)})
+			ON CONFLICT (subscription_id) DO UPDATE
+			SET entity_id = EXCLUDED.entity_id,
+				plan = EXCLUDED.plan,
+				status = EXCLUDED.status,
+				source_updated_at = EXCLUDED.source_updated_at
+			WHERE subscriptions.source_updated_at <= EXCLUDED.source_updated_at
+		`
 	}
 
-	if (evt.type === 'subscription.updated') {
-		const { id, payer, items, status } = evt.data
-		const entityId = payer.organization_id ?? payer.user_id
-		const plan = items[0]?.plan?.slug
-		await db.subscriptions.update({
-			where: { subscriptionId: id },
-			data: { entityId, plan, status },
-		})
-	}
-
-	if (evt.type === 'subscription.pastDue') {
-		const { id, status } = evt.data
-		await db.subscriptions.update({
-			where: { subscriptionId: id },
-			data: { status },
+	if (evt.type === 'subscriptionItem.created') {
+		const { id, payer, plan, status } = evt.data
+		const entityId = payer?.organization_id ?? payer?.user_id
+		await db.subscriptionItems.upsert({
+			where: { itemId: id },
+			create: {
+				itemId: id,
+				...(entityId ? { entityId } : {}),
+				...(plan?.slug ? { plan: plan.slug } : {}),
+				status,
+			},
+			update: {
+				...(entityId ? { entityId } : {}),
+				...(plan?.slug ? { plan: plan.slug } : {}),
+				status,
+			},
 		})
 	}
 
 	if (evt.type === 'subscriptionItem.canceled') {
-		// Subscription item events carry only the item, not its parent subscription id.
-		// Identify the record by payer + plan slug.
-		const { payer, plan, canceled_at } = evt.data
+		const { id, payer, plan, canceled_at } = evt.data
 		const entityId = payer?.organization_id ?? payer?.user_id
-		await db.subscriptionItems.update({
-			where: { entityId, plan: plan?.slug },
-			data: { status: 'canceled', canceledAt: canceled_at },
+		await db.subscriptionItems.upsert({
+			where: { itemId: id },
+			create: {
+				itemId: id,
+				...(entityId ? { entityId } : {}),
+				...(plan?.slug ? { plan: plan.slug } : {}),
+				status: 'canceled',
+				canceledAt: canceled_at,
+			},
+			update: {
+				...(entityId ? { entityId } : {}),
+				...(plan?.slug ? { plan: plan.slug } : {}),
+				status: 'canceled',
+				canceledAt: canceled_at,
+			},
 		})
 		// Notify user/org admin of cancellation
 	}
 
 	if (evt.type === 'subscriptionItem.pastDue') {
-		const { payer, plan, past_due_at } = evt.data
+		const { id, payer, plan, past_due_at } = evt.data
 		const entityId = payer?.organization_id ?? payer?.user_id
-		await db.subscriptionItems.update({
-			where: { entityId, plan: plan?.slug },
-			data: { status: 'past_due', pastDueAt: past_due_at },
+		await db.subscriptionItems.upsert({
+			where: { itemId: id },
+			create: {
+				itemId: id,
+				...(entityId ? { entityId } : {}),
+				...(plan?.slug ? { plan: plan.slug } : {}),
+				status: 'past_due',
+				pastDueAt: past_due_at,
+			},
+			update: {
+				...(entityId ? { entityId } : {}),
+				...(plan?.slug ? { plan: plan.slug } : {}),
+				status: 'past_due',
+				pastDueAt: past_due_at,
+			},
 		})
 		// Notify user/org admin of payment failure
 	}
@@ -213,7 +250,8 @@ The event data IS the item itself, not the parent subscription:
 - Plan slug is nested: `evt.data.items[i].plan?.slug` on subscription events, `evt.data.plan?.slug` on item events
 - Status values use snake_case (`past_due`, `active`, `canceled`), even though event names use camelCase (`subscription.pastDue`)
 - Always return `200` quickly. Handle async work in a queue or background job.
-- Use `upsert` in `subscription.created` handlers to tolerate webhook replays
+- Persist subscription state with an order-safe upsert that rejects stale payloads (compare `updated_at`, e.g. the `source_updated_at` guard above) so replays and out-of-order deliveries can't overwrite newer state
+- On `subscriptionItem.*` events, key the row on the item id (`evt.data.id`) — `payer` and `plan` may be absent and the DB may not enforce a combined key
 - `CLERK_WEBHOOK_SIGNING_SECRET` must match the Signing Secret from the Clerk Dashboard endpoint
 
 ## Subscription Status Values

@@ -65,6 +65,6 @@ Use these in islands (`.tsx` files) — not directly in `.astro` files without a
 
 ## CRITICAL
 
-- Always add a `client:*` directive — without it the island is server-rendered only and Clerk hooks return undefined
+- Add a `client:*` directive when the island needs client-side hydration and reactivity. Without it the component renders on the server and does not hydrate; `useAuth()` may still expose request auth data during SSR.
 - Import from `@clerk/astro/react` — not `@clerk/react`
 - Islands that need real-time auth state (e.g. sign-out button) must use `client:load`

@@ -74,7 +74,7 @@ Force human mode with `--mode human` or `CLERK_MODE=human`. Typical AI-agent inv
 In addition, sandboxed agent-mode invocations may emit the warning above once
 per CLI invocation when a host-sensitive operation is blocked.
 
-**Rule of thumb:** always pass `--yes` for mutations and `--json` for structured output where available. Pass `--app` / `--instance` when you intentionally target a real app. Bootstrapping without authentication needs no flag at all — temporary development keys are the default; `--accountless` forces that path over both a signed-in session and an existing linked profile. `--keyless` is a deprecated compatibility alias and should not be used in new instructions.
+**Rule of thumb:** `--yes` is required only for `unlink` — it is the one mutation that errors without it. Every other mutation runs without prompting, so preview it with `--dry-run` instead of treating `--yes` as a safety gate. Pass `--json` for structured output where available. Pass `--app` / `--instance` when you intentionally target a real app. Bootstrapping without authentication needs no flag at all — temporary development keys are the default; `--accountless` forces that path over both a signed-in session and an existing linked profile. `--keyless` is a deprecated compatibility alias and should not be used in new instructions.
 
 ## Passing options as JSON: `--input-json`
 
@@ -282,12 +282,12 @@ All three remediation commands are themselves interactive by default: `auth logi
 
 ## What NOT to do in agent mode
 
-- **Don't ignore the sandbox warning.** If the CLI says host-only Clerk state or system capabilities may be unavailable, rerun the same command on the host before trusting the result.
+- **Don't ignore the sandbox warning.** If the CLI says host-only Clerk state or system capabilities may be unavailable, rerun read-only commands on the host before trusting the result; for a mutating `clerk api` request, inspect the target state first to see whether it already took effect instead of retrying blindly.
 - **Don't run `clerk auth login` just to bootstrap or configure a project** - it is not required. `clerk init` and most instance commands work with no account at all; see [auth.md](auth.md#accountless-operating-without-an-account) for the current list of which commands those are and which stay account-only. Log in only to claim the app, link a real app, or use account-only commands.
 - **Don't assume an unclaimed app means a throwaway app.** The CLI follows the local `sk_` key, `sk_live_` included — in an unlinked repo holding a production key, `enable orgs` / `config patch` mutate production unconfirmed. Pass `--app <id>` when you mean a real app.
 - **Don't assume `clerk auth login` is fully unattended from an agent** - it opens a browser and waits for a callback. Prefer `CLERK_PLATFORM_API_KEY` for headless automation. `clerk init --app <id>` or init in an already linked project may still invoke the normal login fallback when a real app target is explicit.
 - **Don't call `clerk link` without `--app` and assume the agent can pick for you** - it only succeeds when silent autolink can determine the app from detected keys.
 - **Don't run `clerk unlink` in agent mode without `--yes`** - it exits with a usage error instead of prompting.
 - **Don't run `clerk config put` without `--dry-run` first** - it's a full replacement and is destructive.
-- **Don't skip `--yes` on mutations and expect them to work** - agent mode disables prompts, so commands that require confirmation will error.
+- **Don't treat `--yes` as a gate on mutations** - only `clerk unlink` requires it; every other mutation confirmation is `isHuman()`-gated and runs without prompting. `--dry-run` is the real safety net, so preview before executing.
 - **Don't leak secret keys into logs** - the CLI never prints the raw secret key, and you shouldn't either.

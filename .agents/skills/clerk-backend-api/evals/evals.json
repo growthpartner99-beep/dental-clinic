@@ -60,14 +60,13 @@
     {
       "id": 5,
       "prompt": "i'm updating user metadata to add a 'plan' field but it keeps deleting the existing 'role' field. what am i doing wrong?",
-      "expected_output": "Metadata updates overwrite not merge. Read existing metadata first, spread it, then write back.",
+      "expected_output": "updateUserMetadata() deep-merges metadata, so additions can be tested without a read-and-spread step; replaceUserMetadata() is for intentional replacement.",
       "scaffold": "nextjs-basic-auth",
       "expectations": [
-        "Explains that updateUser publicMetadata replaces all existing metadata, not merges",
-        "Shows reading the existing user first with getUser(userId)",
-        "Spreads existing metadata before adding new fields ({ ...user.publicMetadata, plan: 'pro' })",
-        "Calls updateUser with the merged metadata object",
-        "Warns that this applies to publicMetadata, privateMetadata, and unsafeMetadata equally"
+        "Explains that updateUserMetadata() deep-merges the provided fields into existing metadata instead of replacing it",
+        "Adds the new plan field directly without reading and spreading the existing metadata first",
+        "Recommends replaceUserMetadata() when the whole metadata object should be replaced intentionally",
+        "Identifies a replace-style call (not updateUserMetadata) as the cause of the lost role field"
       ]
     },
     {

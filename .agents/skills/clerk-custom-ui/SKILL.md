@@ -24,11 +24,11 @@ This skill covers two areas:
 
 | Task | Reference |
 |------|-----------|
-| Custom sign-in (Core 2 / LTS) | core-2/custom-sign-in.md |
-| Custom sign-up (Core 2 / LTS) | core-2/custom-sign-up.md |
-| Custom sign-in (Current SDK v7+) | core-3/custom-sign-in.md |
-| Custom sign-up (Current SDK v7+) | core-3/custom-sign-up.md |
-| Show component pattern (Current SDK) | core-3/show-component.md |
+| Custom sign-in — Core 2 (`@clerk/nextjs` v5–v6, `@clerk/clerk-react` v5–v6, `@clerk/clerk-expo` v1–v2) | core-2/custom-sign-in.md |
+| Custom sign-up — Core 2 (`@clerk/nextjs` v5–v6, `@clerk/clerk-react` v5–v6, `@clerk/clerk-expo` v1–v2) | core-2/custom-sign-up.md |
+| Custom sign-in — current SDK (`@clerk/nextjs` v7+, `@clerk/react` v6+, `@clerk/expo` v3+) | core-3/custom-sign-in.md |
+| Custom sign-up — current SDK (`@clerk/nextjs` v7+, `@clerk/react` v6+, `@clerk/expo` v3+) | core-3/custom-sign-up.md |
+| Show component pattern (current SDK) | core-3/show-component.md |
 
 ## Custom Flow References
 
@@ -42,7 +42,9 @@ This skill covers two areas:
 
 ## Appearance Customization
 
-Appearance customization applies to both Core 2 and the current SDK.
+The guidance in this section applies to Clerk's **web** components (the `appearance` prop, CSS, and `@clerk/ui` themes) and works for both Core 2 and the current SDK.
+
+> **Native Expo apps:** the `appearance` prop and CSS guidance below do **not** style native iOS/Android components. To theme native components (`<AuthView />`, `<UserProfileView />`, `<UserButton />`), set the `theme` option in the `@clerk/expo` config plugin with a `clerk-theme.json` file applied at prebuild time — see [Theming Expo native components](https://clerk.com/docs/reference/expo/native-components/theming).
 
 ### Component Customization Options
 
@@ -127,9 +129,9 @@ import { dark, neobrutalism } from '@clerk/ui/themes'
 
 #### shadcn Theme
 
-> **IMPORTANT:** If the project has `components.json` (shadcn/ui installed), ALWAYS apply the shadcn theme as the FIRST customization step. This ensures Clerk components visually match the existing shadcn design system. Skip this only if the user explicitly requests a different theme.
+> **IMPORTANT:** If the project uses shadcn/ui **on Tailwind v4**, ALWAYS apply the shadcn theme as the FIRST customization step. This ensures Clerk components visually match the existing shadcn design system. Skip this only if the user explicitly requests a different theme. Check the `tailwindcss` version in `package.json` (not just `components.json`): for **Tailwind v3**, skip the theme — the CSS import below relies on Tailwind v4's CSS-first setup — and supply the shadcn design tokens manually via `appearance.variables` / `appearance.elements` instead.
 
-**If the project uses shadcn/ui** (check for `components.json` in the project root), **always use the shadcn theme**:
+**If the project uses shadcn/ui with Tailwind v4** (check for `components.json` plus `tailwindcss` v4 in `package.json`), **always use the shadcn theme**:
 
 ```typescript
 import { shadcn } from '@clerk/ui/themes'

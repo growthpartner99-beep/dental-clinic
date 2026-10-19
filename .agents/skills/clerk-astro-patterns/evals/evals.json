@@ -55,14 +55,14 @@
     {
       "id": 5,
       "prompt": "i have a mix of static and dynamic pages in my astro app. how do i handle auth on pages that are statically prerendered?",
-      "expected_output": "Explains that static prerendered pages skip middleware, suggests using client-side auth in islands or converting the page to SSR with export const prerender = false",
+      "expected_output": "Explains that static prerendered pages skip middleware, suggests using client-side auth in islands or setting export const prerender = false for pages that need server-side auth",
       "scaffold": "astro-basic-auth",
       "expectations": [
         "Notes that clerkMiddleware is skipped for prerendered pages",
         "Suggests removing export const prerender = true for pages that need auth",
         "OR suggests using client-side useAuth in island components for partially static pages",
         "Does NOT suggest that Astro.locals.auth() works on prerendered pages",
-        "Explains the hybrid rendering approach (output: hybrid in astro.config.mjs)"
+        "For server-side auth in a statically rendered Astro project, sets export const prerender = false on the protected page"
       ]
     },
     {
@@ -74,7 +74,7 @@
         "Calls Astro.locals.auth() and destructures both userId and orgId",
         "Returns Astro.redirect('/sign-in') when userId is falsy",
         "Returns Astro.redirect('/select-org') when orgId is falsy",
-        "Uses orgId to fetch or display org-specific data",
+        "Looks up the active organization's name using orgId and displays that name on the page",
         "Handles both unauthenticated and no-org-selected states"
       ]
     },
@@ -87,7 +87,7 @@
         "Updates astro.config to include react() in integrations array alongside clerk()",
         "Creates a React component (.tsx) importing from @clerk/astro/react (NOT @clerk/astro/components)",
         "Uses Show when='signed-in' and Show when='signed-out' for conditional rendering (NOT SignedIn/SignedOut, which @clerk/astro 3 removed)",
-        "Includes UserButton and SignInButton from @clerk/astro/react",
+        "Includes UserButton, SignInButton, and SignUpButton from @clerk/astro/react",
         "Mounts the React component in an .astro file with client:load directive",
         "Does NOT forget client:load on the React component (would render as static HTML without it)"
       ]

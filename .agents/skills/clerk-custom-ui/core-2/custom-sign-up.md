@@ -136,8 +136,14 @@ export default function SignUpPage() {
         code,
       })
 
-      if (result.status === 'complete') {
-        await setActive({ session: result.createdSessionId })
+      // Submit any required fields Clerk still reports as missing
+      if (result.missingFields.length > 0) {
+        // Collect these values from the user first (e.g. firstName, lastName)
+        await signUp.update({ firstName: 'Jane', lastName: 'Doe' })
+      }
+
+      if (signUp.status === 'complete') {
+        await setActive({ session: signUp.createdSessionId })
         router.push('/')
       }
     } catch (err) {

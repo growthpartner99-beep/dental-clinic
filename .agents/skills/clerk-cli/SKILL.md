@@ -61,8 +61,11 @@ invocation is untrusted until you rerun the same command on the host.
 
 If a command was accidentally run in a sandbox and it reports `Not logged in`,
 `auth_required`, `not linked`, missing env, keychain/file permission errors,
-or network failures, **do not treat the result as authoritative**. Rerun it on
-the host before acting on it or reporting it to the user.
+or network failures, **do not treat the result as authoritative**. For
+read-only commands, rerun on the host before acting on it or reporting it to
+the user. For a mutating `clerk api` request, don't blindly retry: inspect the
+target state first to see whether the original attempt already took effect,
+then rerun on the host only if it did not.
 
 ## Invoking the CLI
 
@@ -90,7 +93,7 @@ The published npm package is **`clerk`**, not `@clerk/cli`. Never teach `npm ins
 
 ## Prerequisites (run at session start for non-setup operations)
 
-Except when following `clerk-setup`, verify the CLI is authenticated, linked, and healthy before running other Clerk commands in a session:
+Except when following `clerk-setup`, verify the CLI is authenticated, linked, and healthy before running other Clerk commands in a session (a linked profile is required only for profile-dependent commands — accountless `api` and `users` workflows stay available when local secret keys support them):
 
 ```sh
 clerk --version               # confirm the binary is on PATH
@@ -143,7 +146,7 @@ Use this before `clerk api <path>`. If you don't see the endpoint you expected, 
 # GET requests
 clerk api /users                                  # list users
 clerk api /users/user_abc123                      # fetch one
-clerk api /users?limit=5&order_by=-created_at     # query params work inline
+clerk api '/users?limit=5&order_by=-created_at'   # quote the URL so the shell doesn't split on &
 
 # Mutating requests
 clerk api /users -d '{"email_address":["a@b.co"]}'          # POST (auto-detected from body)

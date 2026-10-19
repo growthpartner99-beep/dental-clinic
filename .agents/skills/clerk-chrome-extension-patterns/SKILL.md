@@ -77,9 +77,9 @@ function IndexPopup() {
   return (
     <ClerkProvider
       publishableKey={PUBLISHABLE_KEY}
-      afterSignOutUrl={`${EXTENSION_URL}/popup.html`}
-      signInFallbackRedirectUrl={`${EXTENSION_URL}/popup.html`}
-      signUpFallbackRedirectUrl={`${EXTENSION_URL}/popup.html`}
+      afterSignOutUrl={`${EXTENSION_URL}popup.html`}
+      signInFallbackRedirectUrl={`${EXTENSION_URL}popup.html`}
+      signUpFallbackRedirectUrl={`${EXTENSION_URL}popup.html`}
     >
       <Show when="signed-out">
         <SignInButton mode="modal" />
@@ -212,6 +212,7 @@ import { createClerkClient } from '@clerk/chrome-extension/client'
 
 const EXTENSION_URL = chrome.runtime.getURL('.')
 const POPUP_URL = `${EXTENSION_URL}popup.html`
+const publishableKey = process.env.PLASMO_PUBLIC_CLERK_PUBLISHABLE_KEY
 
 const clerk = createClerkClient({ publishableKey })
 

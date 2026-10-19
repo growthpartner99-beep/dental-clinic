@@ -36,13 +36,15 @@ async function getToken(): Promise<string | null> {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  getToken()
-    .then((token) => sendResponse({ token }))
-    .catch((error) => {
-      console.error('[Background service worker] Error:', JSON.stringify(error))
-      sendResponse({ token: null })
-    })
-  return true
+  if (request.type === 'GET_TOKEN') {
+    getToken()
+      .then((token) => sendResponse({ token }))
+      .catch((error) => {
+        console.error('[Background service worker] Error:', JSON.stringify(error))
+        sendResponse({ token: null })
+      })
+    return true
+  }
 })
 ```
 
@@ -83,7 +85,7 @@ For popups or side panels that use plain TypeScript instead of React:
 ```typescript
 import { createClerkClient } from '@clerk/chrome-extension/client'
 
-const publishableKey = process.env.CLERK_PUBLISHABLE_KEY
+const publishableKey = process.env.PLASMO_PUBLIC_CLERK_PUBLISHABLE_KEY
 const EXTENSION_URL = chrome.runtime.getURL('.')
 const POPUP_URL = `${EXTENSION_URL}popup.html`
 
