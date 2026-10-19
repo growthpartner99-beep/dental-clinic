@@ -45,7 +45,9 @@
         }
       ],
       "./plugins/withCmakeObjectPathMax.js",
-      "expo-image"
+      "expo-image",
+      "expo-secure-store",
+      "@clerk/expo"
     ],
     "experiments": {
       "typedRoutes": true,

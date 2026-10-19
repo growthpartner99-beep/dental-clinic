@@ -1,9 +1,13 @@
+import { Show, useClerk, useSSO, useUser } from "@clerk/expo";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
-import { StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 const CARD_HEIGHT = 435;
+
+type SocialStrategy = "oauth_apple" | "oauth_google";
 
 // Hero art position, matched to Design/auth-screen-design.png (fit via offline search)
 const HERO = { top: 63, left: -29, width: 442, height: 328 };
@@ -36,6 +40,30 @@ const HAZE_COLORS = [
 ] as const;
 
 export default function AuthScreen() {
+  const { startSSOFlow } = useSSO();
+  const [pending, setPending] = useState<SocialStrategy | null>(null);
+
+  const onPressSocial = async (strategy: SocialStrategy) => {
+    if (pending) return;
+    setPending(strategy);
+    try {
+      const { createdSessionId, setActive, signUp } = await startSSOFlow({
+        strategy,
+      });
+      // SSO is the one flow that still requires activating the session manually.
+      if (createdSessionId && setActive) {
+        await setActive({ session: createdSessionId });
+      } else if (signUp?.status === "missing_requirements") {
+        console.warn("Sign-up missing requirements:", signUp.missingFields);
+      }
+      // No session and no missing requirements = user cancelled; stay silent.
+    } catch (err) {
+      console.error("Social sign-in failed:", JSON.stringify(err, null, 2));
+    } finally {
+      setPending(null);
+    }
+  };
+
   return (
     <View style={styles.root}>
       <LinearGradient
@@ -56,63 +84,127 @@ export default function AuthScreen() {
         contentFit="fill"
       />
 
-      <View style={styles.card}>
-        <LinearGradient
-          colors={CARD_COLORS}
-          locations={CARD_LOCATIONS}
-          style={StyleSheet.absoluteFill}
-        />
+      <Show when="signed-out">
+        <View style={styles.card}>
+          <LinearGradient
+            colors={CARD_COLORS}
+            locations={CARD_LOCATIONS}
+            style={StyleSheet.absoluteFill}
+          />
 
-        <View style={styles.content}>
-          <Text style={styles.logo}>
-            <Text style={styles.logoDark}>Denta</Text>
-            <Text style={styles.logoAccent}>Care</Text>
-          </Text>
+          <View style={styles.content}>
+            <Text style={styles.logo}>
+              <Text style={styles.logoDark}>Denta</Text>
+              <Text style={styles.logoAccent}>Care</Text>
+            </Text>
 
-          <Text style={styles.headline}>
-            {"Care for your smile,\nwithout the phone call"}
-          </Text>
+            <Text style={styles.headline}>
+              {"Care for your smile,\nwithout the phone call"}
+            </Text>
 
-          <Text style={styles.subtitle}>Modern dental care, made easy.</Text>
+            <Text style={styles.subtitle}>Modern dental care, made easy.</Text>
 
-          <View style={[styles.button, styles.appleButton]}>
-            <Image
-              source={require("../../assets/images/apple-logo.png")}
-              style={styles.appleIcon}
-            />
-            <Text style={styles.appleLabel}>Continue with Apple</Text>
-          </View>
-
-          <View style={[styles.button, styles.googleButton]}>
-            <View style={styles.googleBorder} />
-            <Image
-              source={require("../../assets/images/google-g.png")}
-              style={styles.googleIcon}
-            />
-            <Text style={styles.googleLabel}>Continue with Google</Text>
-          </View>
-
-          <View style={styles.footerBlock}>
-            <View style={styles.footerRow}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={pending !== null}
+              onPress={() => onPressSocial("oauth_apple")}
+              style={({ pressed }) => [
+                styles.button,
+                styles.appleButton,
+                pressed && styles.buttonPressed,
+              ]}
+            >
               <Image
-                source={require("../../assets/images/lock-icon.png")}
-                style={styles.lockIcon}
+                source={require("../../assets/images/apple-logo.png")}
+                style={styles.appleIcon}
               />
-              <Text style={styles.footerSmall}>
-                By continuing, you agree to our
+              <Text style={styles.appleLabel}>Continue with Apple</Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              disabled={pending !== null}
+              onPress={() => onPressSocial("oauth_google")}
+              style={({ pressed }) => [
+                styles.button,
+                styles.googleButton,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <View style={styles.googleBorder} />
+              <Image
+                source={require("../../assets/images/google-g.png")}
+                style={styles.googleIcon}
+              />
+              <Text style={styles.googleLabel}>Continue with Google</Text>
+            </Pressable>
+
+            <View style={styles.footerBlock}>
+              <View style={styles.footerRow}>
+                <Image
+                  source={require("../../assets/images/lock-icon.png")}
+                  style={styles.lockIcon}
+                />
+                <Text style={styles.footerSmall}>
+                  By continuing, you agree to our
+                </Text>
+              </View>
+
+              <Text style={styles.footerLinks}>
+                <Text style={styles.link}>Privacy Policy</Text>
+                <Text style={styles.footerJoiner}> and </Text>
+                <Text style={styles.link}>Terms of Use</Text>
               </Text>
             </View>
-
-            <Text style={styles.footerLinks}>
-              <Text style={styles.link}>Privacy Policy</Text>
-              <Text style={styles.footerJoiner}> and </Text>
-              <Text style={styles.link}>Terms of Use</Text>
-            </Text>
           </View>
         </View>
-      </View>
+      </Show>
+
+      <Show when="signed-in">
+        <SignedInCard />
+      </Show>
 
       <StatusBar style="dark" />
+    </View>
+  );
+}
+
+function SignedInCard() {
+  const { user } = useUser();
+  const { signOut } = useClerk();
+  const name = user?.firstName || user?.fullName || "there";
+  const email = user?.primaryEmailAddress?.emailAddress;
+
+  return (
+    <View style={styles.card}>
+      <LinearGradient
+        colors={CARD_COLORS}
+        locations={CARD_LOCATIONS}
+        style={StyleSheet.absoluteFill}
+      />
+
+      <View style={styles.content}>
+        <Text style={styles.logo}>
+          <Text style={styles.logoDark}>Denta</Text>
+          <Text style={styles.logoAccent}>Care</Text>
+        </Text>
+
+        <Text style={styles.headline}>{`Welcome, ${name}`}</Text>
+
+        {email ? <Text style={styles.subtitle}>{email}</Text> : null}
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => signOut()}
+          style={({ pressed }) => [
+            styles.button,
+            styles.signOutButton,
+            pressed && styles.buttonPressed,
+          ]}
+        >
+          <Text style={styles.googleLabel}>Sign out</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -194,6 +286,9 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 4,
   },
+  buttonPressed: {
+    opacity: 0.85,
+  },
   appleIcon: {
     width: 20.5,
     height: 24.6,
@@ -207,6 +302,16 @@ const styles = StyleSheet.create({
     marginTop: 18.7,
     paddingLeft: 44.2,
     gap: 34.6,
+    backgroundColor: "#F3F9FE",
+    shadowColor: "#45A3E5",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  signOutButton: {
+    marginTop: 25.75,
+    justifyContent: "center",
     backgroundColor: "#F3F9FE",
     shadowColor: "#45A3E5",
     shadowOffset: { width: 0, height: 4 },
