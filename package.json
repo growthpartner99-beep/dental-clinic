@@ -4,7 +4,10 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@clerk/expo": "^4.13.0",
+    "@clerk/expo-biometrics": "^1.1.0",
     "@clerk/expo-google-signin": "^1.1.0",
+    "@clerk/expo-native-components": "^0.2.0",
+    "@clerk/expo-passkeys": "^2.1.0",
     "@expo-google-fonts/figtree": "^0.4.1",
     "@expo/ui": "~58.0.21",
     "expo": "~58.0.16",
@@ -20,6 +23,7 @@
     "expo-image": "~58.0.16",
     "expo-linear-gradient": "~58.0.3",
     "expo-linking": "~58.0.13",
+    "expo-local-authentication": "~58.0.2",
     "expo-router": "~58.0.24",
     "expo-secure-store": "~58.0.2",
     "expo-splash-screen": "~58.0.10",
