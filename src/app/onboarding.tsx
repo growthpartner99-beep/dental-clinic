@@ -199,10 +199,10 @@ const styles = StyleSheet.create({
   },
   bubblesTop: {
     position: "absolute",
-    top: 49,
-    left: 302,
-    width: 98,
-    height: 111,
+    top: 42,
+    left: 300,
+    width: 111,
+    height: 137,
   },
   bubblesBottom: {
     position: "absolute",
@@ -236,7 +236,9 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     marginHorizontal: 30,
-    marginTop: 20,
+    // 18 keeps the card top at/above y=161.6 so baked pixels from the
+    // bubble crop's card region never peek out above the card.
+    marginTop: 18,
     borderRadius: 26,
     borderWidth: 1,
     borderColor: "#FFFFFF",
