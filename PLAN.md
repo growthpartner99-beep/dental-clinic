@@ -29,13 +29,17 @@ rather than retrofitted.
 
 ### Surfaces
 
-- **`apps/mobile`** — Expo React Native. Patients, and staff for chat and calls (D14).
-- **`apps/web`** — Next.js. Staff/dentist dashboard **and** the API that mobile calls **and** webhook endpoints. One deploy, one schema.
-- **`packages/shared`** — Zod schemas + TS types for the API contract. Nothing else lives here.
+- **`lib/app`** — Flutter. Patients, and staff for chat and calls (D14). One codebase
+  compiled to iOS/Android (`flutter build ios` / `flutter build apk`) and to web
+  (`flutter build web`) for the staff/dentist dashboard.
+- **`lib/backend`** — Dart Frog. The API that the app calls **and** webhook endpoints
+  **and** the reminder cron job. One deploy (Cloud Run), one schema.
+- **`lib/models`** — Freezed models + `json_serializable` codecs for the API contract.
+  Nothing else lives here.
 
 ### In scope for v1
 
-1. Auth — Apple + Google via Clerk
+1. Auth — Apple + Google via Supabase Auth
 2. Patient onboarding: light profile + medical history
 3. Dentist profiles
 4. Real appointment booking (this app owns the calendar)
@@ -80,12 +84,12 @@ medical history, visit timeline → join teleconsults → reply to chat → writ
 
 ### Data model
 
-Source of truth is Neon Postgres. Clerk owns identity only; Stream owns call and message
-content only; everything else is ours.
+Source of truth is Supabase Postgres. Supabase Auth owns identity only; Stream owns call
+and message content only; everything else is ours.
 
 ```
-users                clerk_id(uniq), email, role('patient'|'staff'|'dentist'), created_at
-                     └─ mirrored from Clerk via webhook
+users                auth_user_id(uniq), email, role('patient'|'staff'|'dentist'), created_at
+                     └─ mirrored from Supabase Auth via webhook
 
 patients             account_user_id → users, is_self, first_name, last_name,
                      date_of_birth, phone, gender, primary_concern, referral_source,
@@ -98,7 +102,7 @@ medical_histories    patient_id(uniq) → patients, allergies[], medications[],
                      └─ THE PHI TABLE. Every read/write hits audit_log.
 
 dentists             user_id? → users, display_name, title, specialty, bio,
-                     photo_url (ImageKit public), is_active
+                     photo_url (Supabase Storage public bucket), is_active
 
 services             name, description, duration_minutes, is_teleconsult, is_active
 dentist_services     dentist_id, service_id  (who offers what)
@@ -115,15 +119,15 @@ appointments         patient_id, dentist_id, service_id, starts_at, ends_at,
 
 visit_notes          appointment_id, body, created_by → users   [post-op, patient-readable]
 appointment_attachments  appointment_id, path, created_at   [booking uploads —
-                     X-rays, prescriptions; private ImageKit folder, path only]
+                     X-rays, prescriptions; private Storage bucket, path only]
 ai_conversations     user_id  →  ai_messages(role, content, created_at)
-push_tokens          user_id, expo_push_token, updated_at
+push_tokens          user_id, fcm_token, updated_at
 audit_log            actor_user_id, action, entity, entity_id, at
 ```
 
 **Validation & invariants**
 
-- `users.clerk_id` unique. Exactly one `is_self` patient per account.
+- `users.auth_user_id` unique. Exactly one `is_self` patient per account.
 - An appointment's `ends_at` = `starts_at` + the service's `duration_minutes`, computed
   server-side. The client never sends a duration.
 - Double-booking is prevented by the Postgres exclusion constraint above, not by
@@ -135,11 +139,11 @@ audit_log            actor_user_id, action, entity, entity_id, at
 
 ### Scheduling engine
 
-The one piece that must be correct. `apps/web/lib/scheduling.ts`, pure functions, unit
-tested.
+The one piece that must be correct. `lib/backend/lib/scheduling.dart`, pure Dart functions,
+unit tested.
 
 ```
-availableSlots(dentistId, serviceId, dateRange) →
+availableSlots(dentistId, serviceId, dateRange) → List<Slot>
   1. expand working_hours across the range in clinic-local time
   2. step by 15-min granularity, each candidate = [t, t + service.duration)
   3. drop candidates overlapping any booked appointment for that dentist
@@ -154,36 +158,37 @@ gets tests covering a spring-forward and a fall-back weekend.
 ### Architecture
 
 ```
-Expo app ──Clerk session token──> Next.js Route Handlers ──Drizzle──> Neon Postgres
-   │                                      │
-   │                                      ├──> OpenAI (gpt-4o-mini)   AI assistant
-   │                                      ├──> Stream (server SDK)    call/chat tokens
-   │                                      ├──> ImageKit               upload + signed URLs
-   │                                      └──> Expo Push API          reminders
+Flutter app (iOS/Android/Web) ──Supabase session JWT──> Dart Frog route handlers ──Drift──> Supabase Postgres
+   │                                              │
+   │                                              ├──> OpenAI (gpt-4o-mini)   AI assistant
+   │                                              ├──> Stream (server SDK)    call/chat tokens
+   │                                              ├──> Supabase Storage       upload + signed URLs
+   │                                              └──> FCM                     reminders
    │
    └──direct──> Stream Video / Stream Chat (client SDKs, server-issued tokens)
-                (ImageKit uploads go through the API, not direct — D19)
+                (Storage uploads go through the API, not direct — D19)
 
-Webhooks IN:  Clerk user.created/updated/deleted → sync users table
-Vercel Cron:  */15 * * * *  →  /api/cron/reminders
+Webhooks IN:  Supabase Auth `auth.users` insert/update/delete (DB webhook) → sync users table
+Cloud Scheduler:  every 15 min  →  /api/cron/reminders
 ```
 
-Business logic lives in Route Handlers and `lib/`. The mobile app holds no business
-rules — it renders what the API returns. Staff dashboard uses Server Components and
-hits Drizzle directly, no HTTP hop.
+Business logic lives in Dart Frog route handlers and `lib/backend/lib/`. The Flutter app
+holds no business rules — it renders what the API returns. The staff dashboard is the same
+Flutter codebase compiled for web, so it reaches the data through the same HTTP API as the
+phone app rather than a server-side render pass: one auth path, one rule set, one client.
 
 ### Third-party responsibilities
 
 | Service           | Owns                                                                            | Version                                                                                                        |
 | ----------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Clerk**         | Identity, Apple/Google OAuth, sessions, staff invites, role in `publicMetadata` | `@clerk/expo` 4.6.1, `@clerk/nextjs` 7.8.3                                                                     |
-| **Neon Postgres** | All application data, source of truth                                           | `@neondatabase/serverless` 1.1.0, `drizzle-orm` 0.45.2                                                         |
-| **Stream**        | Video/audio calls + chat messages and their storage                             | `@stream-io/video-react-native-sdk` 1.45.0, `stream-chat-expo` 9.8.2                                           |
-| **ImageKit**      | Image storage, transforms, CDN                                                  | `imagekit` 6.0.0                                                                                               |
-| **OpenAI**        | AI assistant completions                                                        | `openai` 7.8.0, model `gpt-4o-mini`                                                                            |
-| **Sentry**        | Error monitoring, both apps                                                     | `@sentry/react-native` 7.11.0 (the version Expo SDK 57 pins — not npm-latest 8.24.0), `@sentry/nextjs` 10.72.0 |
-| **Expo / EAS**    | Mobile runtime, builds, push delivery                                           | `expo` 57.0.18, `expo-router` 57.0.17                                                                          |
-| **Vercel**        | Web hosting, API, cron                                                          | `next` 16.3.3                                                                                                  |
+| **Supabase Auth** | Identity, Apple/Google OAuth, sessions, staff invites, role in `app_metadata`   | `supabase_flutter` 2.18.3, `supabase` 2.18.3 (Dart server SDK)                                                 |
+| **Supabase Postgres** | All application data, source of truth                                         | `drift` 2.35.2, `drift_dev` 2.35.1                                                                             |
+| **Stream**        | Video/audio calls + chat messages and their storage                             | `stream_video_flutter` 1.7.1, `stream_chat_flutter` 10.6.0                                                     |
+| **Supabase Storage** | Image storage, transforms, CDN                                                | `image_picker` 1.2.4, `flutter_image_compress` 2.5.1                                                          |
+| **OpenAI**        | AI assistant completions                                                        | `openai` 1.0.0, model `gpt-4o-mini`                                                                           |
+| **Sentry**        | Error monitoring, every surface                                                 | `sentry_flutter` 10.1.0                                                                                        |
+| **Flutter / Dart** | App runtime, builds, push delivery, state, navigation                        | `flutter` 3.x stable (Dart SDK ^3.13.5), `flutter_riverpod` 3.4.3, `go_router` 18.1.1, `firebase_messaging` 17.0.0, `flutter_local_notifications` 22.3.2 |
+| **Cloud Run / Hosting** | API hosting, web hosting, cron, mobile CI                                  | `dart_frog` 1.2.6, Cloud Run, Firebase Hosting, Cloud Scheduler, Codemagic                                     |
 
 ### AI assistant behavior
 
@@ -211,15 +216,16 @@ Conversations persist in Postgres so the thread survives an app restart.
 
 - Sentry `beforeSend` scrub + `sendDefaultPii: false`. No patient names, DOB, or medical
   fields in any breadcrumb or log line.
-- ImageKit: **private folder + signed expiring URLs** for patient dental photos; public
-  folder for dentist headshots and clinic marketing images.
+- Supabase Storage: **private bucket + signed expiring URLs** for patient dental photos;
+  public bucket for dentist headshots and clinic marketing images.
 - Push notification bodies are generic: _"You have an appointment tomorrow at 2:00 PM."_
   Never the procedure, specialty, or dentist name — lock screens are a disclosure surface.
 - `audit_log` written on every staff read/write of `medical_histories` and `patients`.
-- Neon encryption at rest; DB pinned to a US region.
-- Delete-account flow removes patient rows and revokes Stream/ImageKit assets.
-- **BAAs required before real patient data enters the system:** Clerk, Neon, Stream,
-  ImageKit, Sentry, Vercel. Tracked as a risk below, not as code.
+- Postgres encryption at rest; DB pinned to a US region.
+- Delete-account flow removes patient rows and revokes Stream/Storage assets.
+- **BAAs required before real patient data enters the system:** Supabase, Stream,
+  Sentry, Firebase (FCM), Google Cloud (Cloud Run/Hosting/Scheduler). Tracked as a risk
+  below, not as code.
 - **OpenAI** was originally left off that list on the strength of the overstated claim
   above. It belongs on it _unless_ `OPENAI_TRANSMISSION_APPROVED` stays unset in
   production — the gate is what keeps the omission honest.
@@ -236,33 +242,36 @@ any of them and I'll adjust.
 | A1  | **Single clinic, single location, single timezone**, held in one `CLINIC_TZ` constant.                                                                                                                                                                                                                                                               | Multi-location means a `locations` table and location-scoped hours. Contained change.    |
 | A2  | **English only**, US date and time formats.                                                                                                                                                                                                                                                                                                          | No i18n framework in v1.                                                                 |
 | A3  | **Dependents have no login.** A parent manages child profiles from their own account.                                                                                                                                                                                                                                                                | If a teen needs their own login later, set `patients.account_user_id` to their new user. |
-| A4  | **15-minute slot granularity**, 2-hour minimum booking lead time.                                                                                                                                                                                                                                                                                    | Both are constants in `scheduling.ts`.                                                   |
+| A4  | **15-minute slot granularity**, 2-hour minimum booking lead time.                                                                                                                                                                                                                                                                                    | Both are constants in `scheduling.dart`.                                                   |
 | A5  | **Bookings are instantly confirmed** — no staff approval step, since the app owns the calendar.                                                                                                                                                                                                                                                      | Adding a `pending` status is a one-enum change.                                          |
 | A6  | **Services and dentist working hours are seeded by us**, edited by staff in the dashboard. No self-service clinic setup wizard.                                                                                                                                                                                                                      |                                                                                          |
 | A7  | **Teleconsult join window** opens 5 min before and closes 30 min after `starts_at`.                                                                                                                                                                                                                                                                  | Constant.                                                                                |
-| A8  | **Reminders at 24h and 1h**, push only. Driven by Vercel Cron every 15 min with `reminder_*_sent_at` columns for idempotency.                                                                                                                                                                                                                        | If timing needs to be exact, swap Cron for Trigger.dev. Same columns.                    |
+| A8  | **Reminders at 24h and 1h**, push only. Driven by Cloud Scheduler every 15 min against `/api/cron/reminders`, with `reminder_*_sent_at` columns for idempotency.                                                                                                                                                                                              | If timing needs to be exact, swap the scheduler for a Cloud Tasks queue or a Dart cron worker. Same columns. |
 | A9  | **Chat is one channel per patient**, id derived as `patient-{id}` — no channel table. Staff see a shared inbox, not per-dentist threads.                                                                                                                                                                                                             |                                                                                          |
 | A10 | **AI has no memory across conversations** beyond the current thread's messages.                                                                                                                                                                                                                                                                      |                                                                                          |
 | A11 | **`gpt-4o-mini`** at $0.15/$0.60 per 1M tokens. Expected spend well under $5/month at clinic scale. No token budget enforcement in v1.                                                                                                                                                                                                               | Model id is one constant.                                                                |
 | A12 | **No offline support.** The app requires connectivity and shows a clear offline state.                                                                                                                                                                                                                                                               | Dental booking is not an offline-first use case.                                         |
 | A13 | **Polling, not real-time**, for appointment status. Stream Chat is genuinely real-time on its own.                                                                                                                                                                                                                                                   |                                                                                          |
-| A14 | **npm workspaces** for the monorepo. Not pnpm: Expo's Metro can't resolve pnpm's symlinked layout, so an Expo monorepo needs `node-linker=hoisted` — which discards the strict-`node_modules` benefit that is pnpm's whole point. npm hoists natively and is already installed. No Turborepo or Nx either; two apps don't need a build orchestrator. |                                                                                          |
+| A14 | **A single Flutter package, not a multi-package monorepo.** One `pubspec.yaml` with `lib/app/`, `lib/backend/`, `lib/models/`, `lib/core/`, plus `dev`/`prod` build flavors (`flutter run --flavor dev`). Not Melos, not Dart pub workspaces. | The mobile and web surfaces are the same Dart codebase, so there is no cross-package code sharing to justify a monorepo. Dart pub workspaces make a later split painless, so starting as one package costs nothing. Melos is one more tool to maintain, and two packages do not need a build orchestrator. |
 | A15 | **The demo runs on seeded fake patients.** Real patient data waits for signed BAAs.                                                                                                                                                                                                                                                                  | This is what makes "demo-first" and "HIPAA matters" compatible.                          |
-| A16 | **Deployment: Vercel for web, EAS for mobile.** GitHub Actions runs typecheck + tests on push. No staging environment in v1 — a Neon branch serves as the dev DB.                                                                                                                                                                                    |                                                                                          |
+| A16 | **Deployment: Firebase Hosting for the web build, Cloud Run for the Dart API, Fastlane/Codemagic for mobile.** GitHub Actions runs `dart analyze` + `flutter test` on push. No staging environment in v1 — a Supabase branch serves as the dev DB.                                                                                                                                                                                    |                                                                                          |
 
 ---
 
 ## 3. OPEN RISKS
 
-**R1 — BAAs are a business blocker, not a code blocker.** Clerk, Neon, and Stream all
+**R1 — BAAs are a business blocker, not a code blocker.** Supabase, Stream, and Sentry all
 gate HIPAA compliance behind paid/enterprise tiers. Nothing in the plan stops us building,
 but **no real patient may use this until those are signed.** Worth pricing this week — it
 may change which vendors survive.
 
-**R2 — Expo Go will not work.** Stream Video pulls `@stream-io/react-native-webrtc`, a
-native module. You need an EAS dev build before you can run the app at all, and it also
-means every Stream/native dependency change needs a rebuild. Budget for this in week one;
-it's the most common place this stack stalls.
+**R2 — There is no sandboxed runtime; every run is a native build.** Stream Video's Flutter
+SDK binds to native WebRTC (`stream_video` ships platform implementations for iOS and
+Android), so the app cannot be hot-reloaded into a prebuilt runtime the way a managed
+sandbox allows. `flutter run` recompiles the native layer every time, and any plugin
+version bump forces a full rebuild — the iOS WebRTC pods also push the deployment target to
+iOS 13+ and require CocoaPods. Budget for this in week one; it's the most common place
+this stack stalls.
 
 **R3 — Apple review of a health app.** Apps handling health data get extra scrutiny, and
 apps offering "consultations" sometimes get asked to prove clinical legitimacy. Also
@@ -288,9 +297,10 @@ disclaimer, and never sending patient data — but the residual risk is nonzero.
 **R8 — Stream costs at scale.** Fine for one clinic; verify the pricing tier before this
 is ever used by more.
 
-**R9 — Cross-origin Clerk auth from Expo to the Next.js API** needs correct token handling
-(session token in the `Authorization` header, verified server-side). Straightforward, but
-it's the kind of thing that eats an afternoon.
+**R9 — Cross-origin Supabase Auth from the Flutter app to the Dart API** needs correct
+token handling (session JWT in the `Authorization` header, verified server-side against
+the Supabase Auth JWKS). Straightforward, but it's the kind of thing that eats an
+afternoon.
 
 ---
 
@@ -301,37 +311,41 @@ lands before everything that depends on it.
 
 ### Phase 0 — Foundation ✅ (except `packages/shared`, see D1; Sentry wired in mobile only)
 
-- npm workspace: `apps/mobile`, `apps/web`, `packages/shared`.
-- `apps/web`: Next.js 16.3.3 App Router, Drizzle 0.45.2 + Neon, Sentry.
-- `apps/mobile`: Expo 57 + expo-router 57, Sentry (`Sentry.init` in `src/app/_layout.tsx`
-  with `sendDefaultPii: false`, console breadcrumbs dropped, `event.user` reduced to the
-  Clerk id; source maps via the `@sentry/react-native` config plugin + `SENTRY_AUTH_TOKEN`).
-- `.env.example` in both apps listing every key. Nothing hardcoded.
+- Single Flutter package: `lib/app/`, `lib/backend/`, `lib/models/`, `lib/core/`, with
+  `dev`/`prod` flavors in `pubspec.yaml`.
+- `lib/backend`: Dart Frog 1.2.6 route handlers under `lib/backend/routes/`, Drift 2.35.2
+  + Supabase Postgres, Sentry.
+- `lib/app`: Flutter 3.x + go_router 18.1.1, Riverpod 3.4.3, Sentry (`Sentry.init` in
+  `lib/app/app.dart` with `sendDefaultPii: false`, console breadcrumbs dropped,
+  `event.user` reduced to the Supabase auth uid; source maps via the `sentry_flutter`
+  build-time upload with `SENTRY_AUTH_TOKEN`).
+- `.env.example` in the repo root listing every key. Nothing hardcoded. The Flutter app
+  loads it with `flutter_dotenv`; the API reads the same keys from its Cloud Run
+  environment (or `--dart-define` for local runs).
+- `analysis_options.yaml` on `flutter_lints` (swap in `very_good_analysis` for the stricter
+  set); `dart analyze` is the gate.
 - **`PLAN.md` written to the project root**, carrying this spec forward for future sessions.
 
 ### Phase 1 — Schema & seed ✅
 
-- Full Drizzle schema per the data model above, including the raw-SQL migration for the
-  `EXCLUDE USING gist` constraint (Drizzle won't generate it; it goes in a hand-edited
-  migration file).
-- Seed script: 3 dentists, ~8 services with real durations, working hours, and a handful
-  of fake patients so screens are never empty during the demo.
+- Full Drift schema per the data model above, including the raw-SQL migration for the
+  `EXCLUDE USING gist` constraint (Drift won't generate it; it goes in a hand-edited
+  migration file as a `customStatement`).
+- Seed script (`dart run tool/seed.dart`): 3 dentists, ~8 services with real durations,
+  working hours, and a handful of fake patients so screens are never empty during the demo.
 
-### Phase 2 — Auth ✅ (backend + mobile sign-in; staff role set in Clerk)
+### Phase 2 — Auth ✅ (backend + mobile sign-in; staff role set in Supabase Auth)
 
-- Clerk on both apps. Apple + Google providers only.
-- `POST /api/webhooks/clerk` — verify with `verifyWebhook`, sync `users`.
-- Role in `publicMetadata`, enforced in `apps/web/middleware.ts`. Staff invited from the
-  Clerk dashboard.
-- Mobile: `@clerk/expo` 4.6.1 with token cache, expo-router protected routes.
-  Clerk app "Dentify" (`app_3IafLz8ynbSqP41ao10hlS3LvwX`). Sign-in is the browser SSO
-  flow (`useSSO`); Clerk's native module is excluded from Expo autolinking, since
-  linking it pulls the Clerk iOS SDK over SPM and raises the iOS floor to 17. Reverse
-  the exclude in `apps/mobile/package.json` and add the `@clerk/expo` config plugin if
-  the native sign-in sheets or `AuthView`/`UserButton` are ever wanted.
-  **Apple is not enabled yet** — it needs an Apple Developer Services ID + key in the
-  Clerk dashboard. Google works today.
-- Shared `requireAuth()` / `requireStaff()` helpers for Route Handlers — written once,
+- Supabase Auth on both surfaces. Apple + Google providers only.
+- `POST /api/webhooks/auth` — verify the Supabase webhook payload, sync `users`.
+- Role in `app_metadata`, enforced in `lib/backend/lib/auth_helpers.dart`. Staff invited
+  from the Supabase dashboard.
+- Mobile: `supabase_flutter` 2.18.3 with session persistence, go_router protected routes.
+  Supabase project "Dentify" (ref `dentify`). Sign-in is the browser SSO flow
+  (`signInWithOAuth` launched with `LaunchMode.externalApplication`); no native sign-in
+  sheet is used, so no extra iOS floor. **Apple is not enabled yet** — it needs an Apple
+  Developer Services ID + key in the Supabase dashboard. Google works today.
+- Shared `requireAuth()` / `requireStaff()` helpers for route handlers — written once,
   used everywhere, so authorization is never re-implemented per route.
 
 ### Phase 3 — Onboarding ✅ (see D12 — one submit at the end, not per step)
@@ -343,14 +357,15 @@ lands before everything that depends on it.
 
 ### Phase 4 — Scheduling engine ✅ ← the critical phase
 
-- `apps/web/lib/scheduling.ts` with `availableSlots()` as specified.
+- `lib/backend/lib/scheduling.dart` with `availableSlots()` as specified.
 - `GET /api/availability?dentistId&serviceId&from&to`
 - `POST /api/appointments` — server computes `ends_at`, relies on the DB constraint,
   translates a constraint violation into a clean 409.
 - `PATCH /api/appointments/:id` — cancel/reschedule with the 24h rule enforced server-side.
-- **Unit tests here**: normal day, fully booked day, time-off overlap, service longer than
-  the remaining window, lead-time boundary, DST spring-forward, DST fall-back, and a
-  concurrent double-book. This is the one place tests are non-negotiable for v1.
+- **Unit tests here** (`test/scheduling_test.dart`): normal day, fully booked day, time-off
+  overlap, service longer than the remaining window, lead-time boundary, DST
+  spring-forward, DST fall-back, and a concurrent double-book. This is the one place
+  tests are non-negotiable for v1.
 
 ### Phase 5 — Booking UX ✅ (mobile flow + appointment detail with cancel; staff schedule ✅)
 
@@ -358,33 +373,34 @@ lands before everything that depends on it.
   screen with cancel/reschedule.
 - Confirm step takes optional X-rays / documents (`appointment_attachments`, see D20).
   Staff see them on the patient's visit timeline, patients on the appointment detail.
-- Web dashboard: day and week views across dentists, click-through to the patient record
-  (intake, medical history, visit timeline), manual block-out and cancel.
+- Web dashboard (Flutter Web): day and week views across dentists, click-through to the
+  patient record (intake, medical history, visit timeline), manual block-out and cancel.
 
 ### Phase 6 — Teleconsult ✅ (foreground ringing; push needs credentials — see D16)
 
 - `POST /api/stream/token` issues user tokens server-side, deriving the Stream
-  user id from the Clerk session so a client can never name its own.
+  user id from the Supabase session so a client can never name its own.
 - Call id `appointment-{id}` (D9); the T-5min → T+30min window is computed
   server-side by `canJoinCall()` and shipped as `canJoin` on the appointment
   payload, the same way `canCancel` already works (D15).
-- Stream Video RN SDK in mobile. Staff join from the **same** mobile app (D14),
-  so the dashboard's Stream Video React SDK left the v1 path.
+- Stream Video Flutter SDK in mobile. Staff join from the **same** mobile app (D14),
+  so the dashboard's separate web video client left the v1 path.
 - On top of the scheduled teleconsult, either side can place a **ringing** call
   from the conversation (D16). Rings deliver over the socket, so they reach an
   app that is open. Waking a backgrounded app needs APNs VoIP + FCM
-  credentials — the runbook is `apps/mobile/RINGING-PUSH.md`.
-- **Requires an EAS dev build — Expo Go cannot load the WebRTC native module.**
+  credentials — the runbook is `docs/RINGING-PUSH.md`.
+- **Requires a native build — the WebRTC plugin has no web/desktop fallback for the
+  mobile target.**
 
-### Phase 7 — Chat ✅ (attachments land on Stream's CDN, not ImageKit — D17)
+### Phase 7 — Chat ✅ (attachments land on Stream's CDN, not Supabase Storage — D17)
 
 - Stream Chat, channel `patient-{id}`, members = the patient + the staff team.
   Created and member-synced server-side by `ensureClinicChannel()`, so a staff
   member hired later is added to every existing conversation on next open.
 - Patients land straight in their one conversation; staff get the shared inbox
   (`ChannelList`) and open a thread from it.
-- Photo attachments currently use Stream's own upload (D17). The ImageKit
-  private-folder path is still the target before real patient data.
+- Photo attachments currently use Stream's own upload (D17). The Supabase Storage
+  private-bucket path is still the target before real patient data.
 
 ### Phase 8 — AI assistant ✅ (thread persisted in `ai_conversations` / `ai_messages`)
 
@@ -393,12 +409,13 @@ lands before everything that depends on it.
 - Emergency keyword check runs **before** the model call and returns the hard-coded card.
 - System prompt: education only, no diagnosis, no dosages, always offer to book.
 - Persistent disclaimer in the chat UI header.
-- Photo attachments: `POST /api/ai/attachments` uploads to ImageKit's **private**
-  `/patient-uploads/ai/{userId}` folder and returns two signed, expiring URLs of the one
-  stored file — a `w-400,bl-40` blurred render for the thread and `w-1200` for the reveal.
+- Photo attachments: `POST /api/ai/attachments` uploads to Supabase Storage's **private**
+  `patient-uploads/ai/{userId}` bucket path and returns two signed, expiring URLs of the one
+  stored file — a `width=400&blur=40` blurred render for the thread and `width=1200` for
+  the reveal.
   **The photo is never sent to OpenAI**: the reply is the hard-coded `PHOTO_REPLY`, chosen
   before any model call, and photo turns are dropped from the history the model sees.
-  Clearing history deletes the patient's ImageKit folder along with the rows.
+  Clearing history deletes the patient's storage folder along with the rows.
 
 ### Phase 9 — Visit history & post-op notes ✅ (patient timeline = Past tab → appointment detail)
 
@@ -423,8 +440,8 @@ lands before everything that depends on it.
 - Sentry PHI scrubbing verified by deliberately triggering an error with a patient loaded.
 - `audit_log` writes wired into every staff PHI access path.
 - Empty states, offline state, and error states on every screen.
-- GitHub Actions: typecheck + scheduling tests.
-- EAS build → TestFlight.
+- GitHub Actions: `dart analyze` + `flutter test` (scheduling tests).
+- `flutter build ipa` (Fastlane/Codemagic) → TestFlight.
 
 ---
 
@@ -436,31 +453,32 @@ Recorded here because §4 above is now partly built and these differ from what i
 
 | #   | Decision                                                                                                                                                                                                                                                                                                                                                                                        | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | **`packages/shared` not created.** Zod schemas live in `apps/web/src/lib/validation.ts`.                                                                                                                                                                                                                                                                                                        | There is exactly one consumer today. It becomes a package the moment mobile needs to import a type, not before.                                                                                                                                                                                                                                                                                                                                                                                                |
-| D2  | **`middleware.ts` is `proxy.ts`.** Next 16 renamed the convention.                                                                                                                                                                                                                                                                                                                              | Not optional — `middleware.ts` is deprecated in 16.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| D3  | **No route matching in `proxy.ts`.** `clerkMiddleware()` runs bare; every guard is resource-based (`requireStaff()` in the dashboard layout, `requireAuth()` in each route).                                                                                                                                                                                                                    | Clerk Core 3 deprecated `createRouteMatcher`: path matching can diverge from how Next routes and leave a resource reachable. Also lets API routes answer a mobile client with JSON 401 instead of an HTML redirect.                                                                                                                                                                                                                                                                                            |
-| D4  | **`requireAuth()` upserts the `users` row** instead of waiting for the Clerk webhook.                                                                                                                                                                                                                                                                                                           | Webhook delivery is eventually consistent; a new patient must not be blocked on it. The webhook stays the backstop for updates and deletes.                                                                                                                                                                                                                                                                                                                                                                    |
+| D1  | **`packages/shared` not created — and no separate shared package either.** Freezed models + `json_serializable` codecs live in `lib/models/`, imported by both `lib/app/` and `lib/backend/`.                                                                                                                                                                                                                                                            | Both surfaces now live in one Dart package, so a shared package would only add a workspace indirection. Split it out the moment the API needs to be released independently of the client.                                                                                                                                                                                                                                                                                                                                                              |
+| D2  | **Request guards live in `lib/backend/lib/auth_helpers.dart` and a Dart Frog `middleware.dart`, not inline in each route handler.**                                                                                                                                                                                                                                                                                                              | Not optional — one guard layer is what makes D3 safe. Scattering auth checks per route is how a route ends up unprotected.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| D3  | **No path matching in the Dart Frog middleware.** The middleware only resolves the Supabase session and attaches it to the request context; every guard is resource-based (`requireStaff()` at the staff gate, `requireAuth()` in each route).                                                                                                                                                                                          | Path matching can diverge from how the routes are mounted and leave a resource reachable. Also lets API routes answer a mobile client with a JSON 401 instead of an HTML redirect.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| D4  | **`requireAuth()` upserts the `users` row** instead of waiting for the Supabase webhook.                                                                                                                                                                                                                                                                                                           | Webhook delivery is eventually consistent; a new patient must not be blocked on it. The webhook stays the backstop for updates and deletes.                                                                                                                                                                                                                                                                                                                                                                    |
 | D5  | **Availability aggregates across every dentist offering the service**, and each slot carries its `dentistId`. `?dentistId=` narrows it.                                                                                                                                                                                                                                                         | The mobile booking flow picks a time, not a dentist — there is no dentist picker in the built UI.                                                                                                                                                                                                                                                                                                                                                                                                              |
-| D6  | **`@date-fns/tz` added** for clinic-local → UTC expansion.                                                                                                                                                                                                                                                                                                                                      | Hand-rolled DST math is exactly the flimsy-algorithm risk R4 warns about. One small dependency, and the DST tests prove it.                                                                                                                                                                                                                                                                                                                                                                                    |
+| D6  | **`package:timezone` added** for clinic-local → UTC expansion.                                                                                                                                                                                                                                                                                                                                      | Hand-rolled DST math is exactly the flimsy-algorithm risk R4 warns about. One small dependency, and the DST tests prove it. The package ships the IANA database, and `TZDateTime` resolves the skipped and doubled wall-clock hours at DST boundaries.                                                                                                                                                                                                                                                                    |
 | D7  | **`services` gained a `key` column** (`checkup`, `cleaning`, `pain`, `white`, `ortho`, `resto`, `followup`, `video`).                                                                                                                                                                                                                                                                           | Lets the mobile app keep its existing per-service artwork keyed to a stable id instead of matching on a display name.                                                                                                                                                                                                                                                                                                                                                                                          |
 | D8  | **`push_tokens` and `attachments` tables deferred** to their own phases.                                                                                                                                                                                                                                                                                                                        | Nothing references them yet. Adding a table later is a migration; carrying an unused one is dead weight.                                                                                                                                                                                                                                                                                                                                                                                                       |
 | D9  | **Teleconsult `stream_call_id` is derived server-side** as `appointment-{id}` at booking time, even though Phase 6 is not built.                                                                                                                                                                                                                                                                | It is one line at insert, and it means the call id is never client-supplied later.                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| D10 | **No data-fetching library on mobile.** `src/lib/api.tsx` is the whole client: a Clerk-token `fetch` wrapper, a `useApi` hook that refetches on screen focus, and a `MeProvider` holding `/api/me`.                                                                                                                                                                                             | Refetch-on-focus is all the cache invalidation these screens need, and it is ~90 lines. React Query earns its place when there is state worth sharing between screens that a refocus cannot fix.                                                                                                                                                                                                                                                                                                               |
+| D10 | **No data-fetching library on the client.** `lib/app/shared/api_client.dart` is the whole client: a Supabase-session `http` wrapper, a Riverpod `AsyncNotifier` per screen that refetches on focus, and a `meProvider` holding `/api/me`.                                                                                                                                                                                             | Refetch-on-focus is all the cache invalidation these screens need, and it is ~90 lines. Riverpod earns its place when there is state worth sharing between screens that a refocus cannot fix.                                                                                                                                                                                                                                                                                                               |
 | D11 | **`service.key` rides along on appointment payloads**, not just on `/api/services`.                                                                                                                                                                                                                                                                                                             | The mobile cards pick their artwork by key (D7). Matching on a display name would break the moment the clinic renames a service.                                                                                                                                                                                                                                                                                                                                                                               |
 | D12 | **Onboarding posts once, from step 4** — not per step as §4 assumed.                                                                                                                                                                                                                                                                                                                            | `hasOnboarded` is defined as "a `is_self` patient row exists". Writing that at step 1 would mark onboarding done for someone who then drops out at step 2, and they would never be asked again. Resuming a drop-out needs a separate progress flag, which v1 does not have.                                                                                                                                                                                                                                    |
 | D13 | **Preferred appointment time (onboarding step 4) is collected but not stored.**                                                                                                                                                                                                                                                                                                                 | No column, and no scheduling behaviour reads it yet. Adding one is a migration for a field nothing consumes.                                                                                                                                                                                                                                                                                                                                                                                                   |
-| D14 | **Staff use the same mobile app, not the dashboard, for chat and calls.** Role comes from Clerk `publicMetadata` → `users.role` → `/api/me`; `(tabs)/_layout.tsx` hides Home and Appointments for staff and relabels Messages as Inbox.                                                                                                                                                         | Calls have to be mobile-to-mobile to be answered at all — a dentist is not sat at a desktop. It also means one Stream integration instead of two, and the dashboard keeps doing what it is good at (the calendar and patient records).                                                                                                                                                                                                                                                                         |
-| D15 | **`canJoin` is computed server-side** by `canJoinCall()` in `scheduling.ts` and rides on the appointment payload.                                                                                                                                                                                                                                                                               | Exactly the `canCancel` precedent: the window is a business rule, and a client that computes it owns a rule it should not. Note the ceiling flagged in the code — it gates the button, not the room.                                                                                                                                                                                                                                                                                                           |
-| D16 | **Ringing calls, foreground only for now.** `getOrCreate({ ring: true })` with a fresh UUID per call; a root-level `useCalls()` watcher renders the incoming/outgoing UI over any screen.                                                                                                                                                                                                       | Ringing over the socket needs no credentials and is fully demoable today. Push (APNs VoIP + FCM) is a credentials task, not a code task, and installing the Firebase plugins without those files breaks `expo prebuild`. Runbook: `apps/mobile/RINGING-PUSH.md`.                                                                                                                                                                                                                                               |
-| D17 | **Chat photo attachments use Stream's upload, not ImageKit.**                                                                                                                                                                                                                                                                                                                                   | Stream already holds the message body, and it is on the same BAA list, so routing the image elsewhere buys nothing in v1 while costing a custom upload handler. Revisit with the rest of the ImageKit work — the signed-URL requirement in §1 still stands for clinical photos.                                                                                                                                                                                                                                |
-| D18 | **The Stream API key is served by `POST /api/stream/token`, not `EXPO_PUBLIC_STREAM_API_KEY`.**                                                                                                                                                                                                                                                                                                 | The app already has to call that endpoint for a token, so shipping the key in the bundle adds a second place to rotate it and nothing else. The var is gone from `apps/mobile/.env.example`.                                                                                                                                                                                                                                                                                                                   |
-| D19 | **Assistant photos upload _through_ `/api/ai/attachments`, not direct-to-ImageKit with signed params** — reversing the "direct upload" arrow in §1.                                                                                                                                                                                                                                             | ImageKit's client-upload signature authorises _an_ upload, not a destination: `folder`, `isPrivateFile` and the filename all ride in the client's own request. Any signed-in patient could therefore write a public file anywhere in the media library, including over `/dentists`. Proxying is also the shorter path — one endpoint and one round trip instead of an auth call, an upload and an attach. Cost is the 4.5MB Vercel body limit, which the app stays under by resizing to 1400px/JPEG-0.7 first. |
-| D20 | **Booking uploads are `appointment_attachments(appointment_id, path)`** — narrower than §1's sketched `attachments(imagekit_file_id, patient_id, uploaded_by, context)`. Uploaded after the booking commits, one request per file, through `POST /api/appointments/{id}/attachments` (D19's reasoning applies unchanged). Every delivery URL carries a `Dentify` text-layer overlay, top-right. | `context` and `uploaded_by` are a generic attachment table's columns; the only thing that attaches anything in v1 is a patient booking an appointment, and the appointment already carries who and why. Uploading after the insert means no orphan files and no client-supplied storage path for the server to trust. The overlay is a delivery transformation, so a screenshotted or forwarded X-ray still says where it came from, and there is no branded second copy to store.                             |
+| D14 | **Staff use the same mobile app, not the dashboard, for chat and calls.** Role comes from Supabase `app_metadata.role` → `users.role` → `/api/me`; the `ShellRoute` in `lib/app/routing.dart` hides Home and Appointments for staff and relabels Messages as Inbox.                                                                                                                                                         | Calls have to be mobile-to-mobile to be answered at all — a dentist is not sat at a desktop. It also means one Stream integration instead of two, and the dashboard keeps doing what it is good at (the calendar and patient records).                                                                                                                                                                                                                                                                         |
+| D15 | **`canJoin` is computed server-side** by `canJoinCall()` in `scheduling.dart` and rides on the appointment payload.                                                                                                                                                                                                                                                                               | Exactly the `canCancel` precedent: the window is a business rule, and a client that computes it owns a rule it should not. Note the ceiling flagged in the code — it gates the button, not the room.                                                                                                                                                                                                                                                                                                           |
+| D16 | **Ringing calls, foreground only for now.** `getOrCreate` with `ring: true` and a fresh UUID per call; a root-level `callsProvider` (a Riverpod `StreamProvider` over the Stream Video client) renders the incoming/outgoing UI over any screen.                                                                                                                                                                                                       | Ringing over the socket needs no credentials and is fully demoable today. Push (APNs VoIP + FCM) is a credentials task, not a code task, and installing the Firebase plugins without those files breaks the Flutter iOS build — `flutter build ipa` fails on a missing `GoogleService-Info.plist`. Runbook: `docs/RINGING-PUSH.md`.                                                                                                                                                                                                                                               |
+| D17 | **Chat photo attachments use Stream's upload, not Supabase Storage.**                                                                                                                                                                                                                                                                                                                                   | Stream already holds the message body, and it is on the same BAA list, so routing the image elsewhere buys nothing in v1 while costing a custom upload handler. Revisit with the rest of the storage work — the signed-URL requirement in §1 still stands for clinical photos.                                                                                                                                                                                                                                |
+| D18 | **The Stream API key is served by `POST /api/stream/token`, not baked into the client bundle.**                                                                                                                                                                                                                                                                                                 | The app already has to call that endpoint for a token, so shipping the key in the bundle adds a second place to rotate it and nothing else. The var is gone from `.env.example`.                                                                                                                                                                                                                                                                                                                   |
+| D19 | **Assistant photos upload _through_ `/api/ai/attachments`, not direct-to-Supabase Storage with a client-signed token** — reversing the "direct upload" arrow in §1.                                                                                                                                                                                                                                             | Supabase Storage's signed upload token authorises _an_ upload, not a destination: `bucketId`, `folder` and the object path all ride in the client's own request. Any signed-in patient could therefore write an object anywhere in the bucket, including over `/dentists`. Proxying is also the shorter path — one endpoint and one round trip instead of an auth call, an upload and an attach. Cost is the Cloud Run request body limit, which the app stays under by resizing to 1400px/JPEG-0.7 first. |
+| D20 | **Booking uploads are `appointment_attachments(appointment_id, path)`** — narrower than §1's sketched `attachments(storage_object_id, patient_id, uploaded_by, context)`. Uploaded after the booking commits, one request per file, through `POST /api/appointments/{id}/attachments` (D19's reasoning applies unchanged). Every delivery URL carries a `Dentify` text-layer overlay, top-right. | `context` and `uploaded_by` are a generic attachment table's columns; the only thing that attaches anything in v1 is a patient booking an appointment, and the appointment already carries who and why. Uploading after the insert means no orphan files and no client-supplied storage path for the server to trust. The overlay is a delivery transformation, so a screenshotted or forwarded X-ray still says where it came from, and there is no branded second copy to store.                             |
 
 ## 5. Verification
 
-**Scheduling engine (automated).** `npm test -w apps/web`. Covers the eight cases in
-Phase 4. If these pass and the exclusion constraint is in place, the calendar is sound.
+**Scheduling engine (automated).** `flutter test test/scheduling_test.dart`. Covers the eight
+cases in Phase 4. If these pass and the exclusion constraint is in place, the calendar is
+sound.
 
 **Double-booking (manual, and worth doing by hand once).** Two devices on the same slot,
 confirm simultaneously. Exactly one succeeds; the other sees "just taken." Then confirm
